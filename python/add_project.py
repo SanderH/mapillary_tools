@@ -3,7 +3,9 @@ import sys
 import os
 import json
 import urllib
-import hashlib
+
+reload(sys)
+sys.setdefaultencoding("utf-8")
 
 if __name__ == '__main__':
     '''
@@ -13,10 +15,11 @@ if __name__ == '__main__':
     # get env variables
     try:
         MAPILLARY_USERNAME = os.environ['MAPILLARY_USERNAME']
+        MAPILLARY_EMAIL = os.environ['MAPILLARY_EMAIL']
         MAPILLARY_PASSWORD = os.environ['MAPILLARY_PASSWORD']
 
     except KeyError:
-        print("You are missing one of the environment variables MAPILLARY_USERNAME or MAPILLARY_PASSWORD. These are required.")
+        print("You are missing one of the environment variables MAPILLARY_USERNAME, MAPILLARY_EMAIL or MAPILLARY_PASSWORD. These are required.")
         sys.exit()
 
 
@@ -29,9 +32,12 @@ if __name__ == '__main__':
     print "Adding images in %s to project '%s'" % (path, project_name)
 
     # log in, get the projects
-    params = urllib.urlencode( {"email": MAPILLARY_USERNAME, "password": MAPILLARY_PASSWORD })
+    params = urllib.urlencode( {"email": MAPILLARY_EMAIL, "password": MAPILLARY_PASSWORD })
     response =urllib.urlopen("https://api.mapillary.com/v1/u/login", params)
-    resp = json.loads(response.read())
+    response_read = response.read()
+    print response_read
+    resp = json.loads(response_read)
+    print json.dumps(resp)
     # print resp
     projects = resp['projects']
     upload_token = resp['upload_token']
@@ -40,12 +46,13 @@ if __name__ == '__main__':
     found = False
     print "Your projects:"
     for project in projects:
-        print "'%s'" % project['name']
-        if project['name'] == project_name :
+        if project['name'].decode('utf-8') == project_name:
             found = True
             project_key = project['key']
 
     if not found :
+       for project in projects:
+           print project['name']
        print "Could not find project name '%s' in your projects, exiting." % project_name
        sys.exit()
 
@@ -68,10 +75,6 @@ if __name__ == '__main__':
         description_ = exif['Exif.Image.ImageDescription'].value
         imgDesc = json.loads(description_)
         imgDesc['MAPSettingsProject'] = project_key
-
-        #adjust hash if needed or constructing the Mapillary info from scratch
-        #hash = hashlib.sha256("%s%s%s" %(upload_token,MAPILLARY_USERNAME,filename)).hexdigest()
-        #imgDesc['MAPSettingsUploadHash'] = hash
         exif['Exif.Image.ImageDescription'].value = json.dumps(imgDesc)
         exif.write()
 
