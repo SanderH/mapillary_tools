@@ -1,1 +1,14 @@
-*.pyc
+__pycache__
+.project
+.pydevproject
+*.egg-info
+.settings
+/.cache/
+/.idea/
+/.mypy_cache/
+/publish/
+/build/
+/dist/
+/venv/
+.DS_Store
+*.log

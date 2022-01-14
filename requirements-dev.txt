@@ -1,0 +1,9 @@
+Pillow>=8.4.0,<8.5.0
+pytest
+black
+mypy
+pyinstaller
+flake8
+types-python-dateutil
+types-pytz
+types-requests
