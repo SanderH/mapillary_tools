@@ -1,87 +1,121 @@
-## Mapillary Tools
+<p align="center">
+  <a href="https://github.com/mapillary/mapillary_tools/">
+    <img src="https://raw.githubusercontent.com/mapillary/mapillary_tools/main/docs/images/logo.png">
+  </a>
+</p>
 
-Mapillary Tools is a library for processing and uploading images to [Mapillary](https://www.mapillary.com/).
+<p align="center">
+<a href="https://pypi.org/project/mapillary_tools/"><img alt="PyPI" src="https://img.shields.io/pypi/v/mapillary_tools"></a>
+<a href="https://github.com/mapillary/mapillary_tools/actions"><img alt="Actions Status" src="https://github.com/mapillary/mapillary_tools/actions/workflows/python-package.yml/badge.svg"></a>
+<a href="https://github.com/mapillary/mapillary_tools/blob/main/LICENSE"><img alt="GitHub license" src="https://img.shields.io/github/license/mapillary/mapillary_tools"></a>
+<a href="https://github.com/mapillary/mapillary_tools/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/mapillary/mapillary_tools"></a>
+<a href="https://pepy.tech/project/mapillary_tools"><img alt="Downloads" src="https://pepy.tech/badge/mapillary_tools"></a>
+</p>
+
+mapillary_tools is a command line tool that uploads geotagged images and videos to Mapillary.
+
+```sh
+# Install mapillary_tools
+pip install mapillary_tools
+
+# Process and upload images and videos in the directory
+mapillary_tools process_and_upload MY_CAPTURE_DIR
+
+# List all commands
+mapillary_tools --help
+```
 
 <!--ts-->
 
-* [Quickstart](#quickstart)
-* [Requirements](#requirements)
-* [Installation](#installation)
-* [Video Support](#video-support)
-* [Usage](#usage)
-    - [Process](#process)
-    - [Upload Images](#upload-images)
-    - [Upload BlackVue Videos](#upload-blackvue-videos)
-    - [Video Process](#video-process)
-    - [Authenticate](#authenticate)
-    - [Aliases](#aliases)
-* [Advanced Usage](#advanced-usage)
-    - [Image Description](#image-description)
-    - [Zip Images](#zip-images)
-    - [Upload API](#upload-api)
-* [Troubleshooting](#troubleshooting)
-* [Development](#development)
+- [Supported File Formats](#supported-file-formats)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Process and Upload](#process-and-upload)
+  - [Process](#process)
+  - [Upload](#upload)
+- [Advanced Usage](#advanced-usage)
+  - [Local Video Processing](#local-video-processing)
+  - [Geotagging with GPX](#geotagging-with-gpx)
+  - [Authenticate](#authenticate)
+  - [Image Description](#image-description)
+  - [Zip Images](#zip-images)
+- [Development](#development)
 
 <!--te-->
 
-## Quickstart
+# Supported File Formats
 
-Download the latest `mapillary_tools` binaries for your platform
-here: https://github.com/mapillary/mapillary_tools/releases/tag/v0.8.1.
-See [more installation instructions](#installation) below.
+mapillary_tools can upload both images and videos.
 
-Process and upload imagery:
+## Image Formats
 
-```shell
-mapillary_tools process_and_upload "path/to/images/"
+mapillary_tools supports JPG/JEPG images (.jpg, .jpeg), with the following EXIF tags minimally required:
+
+- GPS Longitude
+- GPS Latitude
+- Date/Time Original or GPS Date/Time
+
+## Video Formats
+
+mapillary_tools supports videos (.mp4, .360) that contain any of the following telemetry structures:
+
+- [GPMF](https://github.com/gopro/gpmf-parser): mostly GoPro videos
+  - [GoPro HERO series](https://gopro.com/en/us/shop/cameras/hero11-black/CHDHX-111-master.html) (from 5 to 11)
+  - [GoPro MAX](https://gopro.com/en/us/shop/cameras/max/CHDHZ-202-master.html)
+- [CAMM](https://developers.google.com/streetview/publish/camm-spec): an open-standard telemetry spec supported by a number of cameras
+  - [Insta360 Pro2](https://www.insta360.com/product/insta360-pro2/)
+  - [Insta360 Titan](https://www.insta360.com/product/insta360-titan)
+  - [Ricoh Theta X](https://theta360.com/en/about/theta/x.html)
+  - [Labpano](https://www.labpano.com/)
+  - and more...
+- [BlackVue](https://blackvue.com/) videos
+  - [DR900S-1CH](https://shop.blackvue.com/product/dr900x-1ch-plus/)
+  - [DR900X Plus](https://shop.blackvue.com/product/dr900x-2ch-plus/)
+
+# Installation
+
+## Standalone Executable
+
+1. Download the latest executable for your platform from the [releases](https://github.com/mapillary/mapillary_tools/releases).
+2. Move the executable to your system `$PATH`
+
+> **_NOTE:_** If you see the error "**mapillary_tools is damaged and can’t be opened**" on macOS, try to clear the extended attributes:
+>
+> ```
+> xattr -c mapillary_tools
+> ```
+
+## Installing via pip
+
+To install or upgrade to the latest stable version:
+
+```sh
+pip install --upgrade mapillary_tools
 ```
 
-Upload BlackVue videos:
+If you can't wait for the latest features in development, install it from GitHub:
 
-```shell
-mapillary_tools upload "path/to/blackvue_videos/*.mp4"
+```sh
+pip install --upgrade git+https://github.com/mapillary/mapillary_tools
 ```
 
-## Requirements
-
-### User Authentication
-
-To upload images to Mapillary, an account is required and can be created [here](https://www.mapillary.com/signup). When
-using the tools for the first time, user authentication is required. You will be prompted to enter your account
-credentials.
-
-### Metadata
-
-To upload images to Mapillary, image `GPS` and `capture time` are minimally required. More
-information [here](https://help.mapillary.com/hc/en-us/articles/115001717829-Geotagging-images).
-
-## Installation
-
-### Installing via Pip
-
-Python (3.6 and above) and git are required:
-
-```shell
-python3 -m pip install --upgrade git+https://github.com/mapillary/mapillary_tools
-```
-
-If you see "Permission Denied" error, try to run the command above with `sudo`, or install it in your
-local [virtualenv](#development) (recommended).
+> **_NOTE:_** If you see "**Permission Denied**" error, try to run the command above with `sudo`, or install it in your
+> local [virtualenv](#setup) (recommended).
 
 ### Installing on Android Devices
 
 A command line program such as Termux is required. Installation can be done without root privileges. The following
 commands will install Python 3, pip3, git, and all required libraries for mapillary_tools on Termux:
 
-```shell
+```sh
 pkg install python git build-essential libgeos openssl libjpeg-turbo
-python3 -m pip install --upgrade pip wheel
-python3 -m pip install --upgrade git+https://github.com/mapillary/mapillary_tools
+pip install --upgrade pip wheel
+pip install --upgrade mapillary_tools
 ```
 
 Termux must access the device's internal storage to process and upload images. To do this, use the following command:
 
-```shell
+```sh
 termux-setup-storage
 ```
 
@@ -91,212 +125,196 @@ program’s native directory before running mapillary_tools. For an example usin
 folder `Internal storage/DCIM/mapillaryimages` the following command will move that folder from shared storage to
 Termux:
 
-```shell
+```sh
 mv -v storage/dcim/mapillaryimages mapillaryimages
 ```
 
-## Video Support
+# Usage
 
-To [process videos](#video-process), you will also need to install `ffmpeg`.
+## Process and Upload
 
-You can download `ffmpeg` from [here](https://ffmpeg.org/download.html). Make sure it is executable and put the
-downloaded binaries in your `$PATH`. You can also install `ffmpeg` with your favourite package manager. For example:
+For most users, `process_and_upload` is the command to go:
 
-On macOS, use [Homebrew](https://brew.sh/):
-
-```shell
-brew install ffmpeg
+```sh
+# Process and upload all images and videos in MY_CAPTURE_DIR and its subfolders, and all videos under MY_VIDEO_DIR
+mapillary_tools process_and_upload MY_CAPTURE_DIR MY_VIDEO_DIR/*.mp4
 ```
 
-On Debian/Ubuntu:
+If any process error occurs, e.g. GPS not found in an image, mapillary_tools will exit with non-zero status code.
+To ignore these errors and continue uploading the rest:
 
-```shell
-sudo apt install ffmpeg
+```sh
+# Skip process errors and upload to the specified user and organization
+mapillary_tools process_and_upload MY_CAPTURE_DIR MY_VIDEO_DIR/*.mp4 \
+    --skip_process_errors \
+    --user_name "my_username" \
+    --organization_key "my_organization_id"
 ```
 
-## Usage
+The `process_and_upload` command will run the [`process`](#process) and the [`upload`](#upload) commands consecutively with combined required and optional arguments.
+The command above is equivalent to:
 
-### Process
+```sh
+mapillary_tools process MY_CAPTURE_DIR MY_VIDEO_DIR/*.mp4 \
+    --skip_process_errors \
+    --desc_path /tmp/mapillary_description_file.json
 
-The `process` command geotags images in the given directory. It extracts the required and optional metadata from image
-EXIF (or the other supported geotag sources), and writes all the metadata (or process errors) in
-an [image description](#image-description) file, which will be read during [upload](#upload).
-
-#### Examples
-
-Process all images in the directory `path/to/images/` (and its sub-directories):
-
-```shell
-mapillary_tools process "path/to/images/"
+mapillary_tools upload MY_CAPTURE_DIR MY_VIDEO_DIR/*.mp4 \
+    --desc_path /tmp/mapillary_description_file.json \
+    --user_name "my_username" \
+    --organization_key "my_organization_id"
 ```
 
-Interpolate images in the directory `path/to/images/` on the GPX track read from `path/to/gpx_file.gpx`. The images are
-required to contain capture time in order to sort the images and interpolate them.
+## Process
 
-```shell
-mapillary_tools process "path/to/images/" \
-    --geotag_source "gpx" \
-    --geotag_source_path "path/to/gpx_file.gpx"
+The `process` command is an intermediate step that extracts the metadata from images and videos,
+and writes them in an [image description file](#image-description). Users should pass it to the [`upload`](#upload) command.
+
+```sh
+mapillary_tools process MY_CAPTURE_DIR MY_VIDEO_DIR/*.mp4
 ```
 
-Process all images in the directory, specifying an angle offset of 90° for the camera direction and splitting images
-into sequences of images apart by less than 100 meters according to image `GPS` and less than 120 seconds according to
-image capture time.
+Duplicate check with custom distance and angle:
 
-```shell
-mapillary_tools process "path/to/images/" \
+```sh
+# Mark images that are 3 meters closer to its previous one as duplicates.
+# Duplicates won't be uploaded
+mapillary_tools process MY_CAPTURE_DIR \
+    --duplicate_distance 3 \
+    --duplicate_angle 360  # Set 360 to disable angle check
+```
+
+Split sequences with the custom cutoff distance or custom capture time gap:
+
+```sh
+# If two successive images are 100 meters apart,
+# OR their capture times are 120 seconds apart,
+# then split the sequence from there
+mapillary_tools process MY_CAPTURE_DIR \
     --offset_angle 90 \
     --cutoff_distance 100 \
-    --cutoff_time 120
+    --cutoff_time 120 \
 ```
 
-### Upload Images
+## Upload
 
-Images that have been successfully processed can be uploaded with the `upload` command.
+After processing you should get the [image description file](#image-description). Pass it to the `upload` command to upload them:
 
-#### Examples
-
-Upload all processed images in the directory `path/to/images/` to user `mly_user` for organization `mly_organization_id`
-. It is optional to specify `--user_name` if you have only one user [authenticated](#authenticate).
-
-```shell
-mapillary_tools upload "path/to/images/" \
-    --user_name "mly_user" \
-    --organization_key "mly_organization_id"
+```sh
+# Upload processed images and videos to the specified user account and organization
+mapillary_tools upload  MY_CAPTURE_DIR \
+    --desc_path /tmp/mapillary_image_description.json \
+    --user_name "my_username" \
+    --organization_key "my_organization_id"
 ```
 
-### Upload BlackVue Videos
+# Advanced Usage
 
-BlackVue videos can be uploaded with the `upload` command and will be processed on Mapillary servers.
+## Local Video Processing
 
-#### Examples
+Local video processing samples a video into a sequence of sample images and ensures the images are geotagged and ready for uploading.
+It gives users more control over the sampling process, for example, you can specify the sampling distance to control the density.
+Also, the sample images have smaller file sizes than videos, hence saving bandwidth.
 
-Upload a BlackVue video with file name `video_file_name.mp4` to user `mly_user` for organization `mly_organization_id`
-. It is optional to specify `--user_name` if you have only one user [authenticated](#authenticate).
+### Install FFmpeg
 
-```shell
-mapillary_tools upload "video_file_name.mp4" \
-    --user_name "mly_user" \
-    --organization_key "mly_organization_id"
+[FFmpeg](https://ffmpeg.org/) is required for local video processing.
+You can download `ffmpeg` and `ffprobe` from [here](https://ffmpeg.org/download.html),
+or install them with your favorite package manager.
+
+### Video Processing
+
+mapillary_tools first extracts the GPS track from the video's telemetry structure, and then locates video frames along the GPS track.
+When all are located, it then extracts one frame (image) every 3 meters by default.
+
+```sh
+# Sample videos in MY_VIDEO_DIR and write the sample images in MY_SAMPLES with a custom sampling distance
+mapillary_tools video_process MY_VIDEO_DIR MY_SAMPLES --video_sample_distance 5
+# The command above is equivalent to
+mapillary_tools sample_video MY_VIDEO_DIR MY_SAMPLES --video_sample_distance 5
+mapillary_tools process MY_SAMPLES
 ```
 
-### Video Process
+To process and upload the sample images consecutively, run:
 
-Video process involves two commands:
-
-1. `sample_video`: sample videos into images, and insert capture times to the image EXIF. Capture time is calculated
-   based on the video start time and sampling interval. This is where `ffmpeg` is being used.
-2. `process`: process (geotag) the sample images with the specified source
-
-The two commands are usually combined into a single command `video_process`.
-
-#### Examples
-
-Sample the videos located in `path/to/videos/` at the default sampling rate 2 seconds, i.e. one video frame every two
-seconds. Video frames will be sampled into a sub-directory `path/to/videos/mapillary_sampled_video_frames`.
-
-```shell
-mapillary_tools sample_video "path/to/videos/"
+```sh
+mapillary_tools video_process_and_upload MY_VIDEO_DIR MY_SAMPLES --video_sample_distance 5
+# The command above is equivalent to
+mapillary_tools video_process MY_VIDEO_DIR MY_SAMPLES --video_sample_distance 5 --desc_path=/tmp/mapillary_description.json
+mapillary_tools upload MY_SAMPLES --desc_path=/tmp/mapillary_description.json
 ```
 
-Sample the videos located in `path/to/videos/` to directory `path/to/sample_images/` at a sampling rate 0.5 seconds,
-i.e. two video frames every second.
+## Geotagging with GPX
 
-```shell
-mapillary_tools sample_video "path/to/videos/" "path/to/sample_images/" \
-    --video_sample_interval 0.5
+If you use external GPS devices for mapping, you will need to geotag your captures with the external GPS tracks.
+
+To geotag images with a GPX file, the capture time (extracted from EXIF tag "Date/Time Original" or "GPS Date/Time") is minimally required.
+It is used to locate the images along the GPS tracks.
+
+```sh
+mapillary_tools process MY_IMAGE_DIR --geotag_source "gpx" --geotag_source_path MY_EXTERNAL_GPS.gpx
 ```
 
-Sample the videos located in `path/to/videos/` to the directory `path/to/sample_images/` at the default sampling rate 1
-second, i.e. one video frame every second, geotagging data from a gpx track stored in `path/to/gpx_file.gpx` video,
-assuming video start time can be extracted from the video file and deriving camera direction based on `GPS`.
+To geotag videos with a GPX file, video start time (video creation time minus video duration) is required to locate the sample images along the GPS tracks.
 
-```shell
-mapillary_tools video_process "path/to/videos/" "path/to/sample_images/" \
+```sh
+# Geotagging with GPX works with interval-based sampling only,
+# the two options --video_sample_distance -1 --video_sample_interval 2 are therefore required
+# to switch from the default distance-based sampling to the legacy interval-based sampling
+mapillary_tools video_process MY_VIDEO_DIR \
     --geotag_source "gpx" \
-    --geotag_source_path "path/to/gpx_file.gpx" \
-    --video_sample_interval 1 \
-    --interpolate_directions
+    --geotag_source_path MY_EXTERNAL_GPS.gpx \
+    --video_sample_distance -1 --video_sample_interval 2
 ```
 
-**GoPro videos**: Sample GoPro videos in directory `path/to/videos/` into import path `path/to/sample_images/` at a
-sampling rate 0.5 seconds, i.e. two frames every second, reading geotag data from the GoPro videos in `path/to/videos/`.
+Ideally, the GPS device and the capture device should use the same clock to get the timestamps synchronized.
+If not, as is often the case, the image locations will be shifted. To solve that, mapillary_tools provides an
+option `--interpolation_offset_time N` that adds N seconds to image capture times for synchronizing the timestamps.
 
-```shell
-mapillary_tools video_process "path/to/videos/" "path/to/sample_images/" \
-    --geotag_source "gopro_videos" \
-    --interpolate_directions \
-    --video_sample_interval 0.5
+```sh
+# The capture device's clock is 8 hours (i.e. -8 * 3600 = -28800 seconds) ahead of the GPS device's clock
+mapillary_tools process MY_IMAGE_DIR \
+    --geotag_source "gpx" \
+    --geotag_source_path MY_EXTERNAL_GPS.gpx \
+    --interpolation_offset_time -28800
 ```
 
-**BlackVue videos**: Sample BlackVue videos in directory `path/to/videos/` at a sampling rate 0.2 seconds, i.e. 5 frames
-every second and process resulting video frames, reading geotag data from the BlackVue videos
-in `path/to/videos/mapillary_sampled_video_frames`.
+Another option `--interpolation_use_gpx_start_time` moves your images to align with the beginning of the GPS track.
+This is useful when you can confirm that you start GPS recording and capturing at the same time, or with a known delay.
 
-```shell
-mapillary_tools video_process "path/to/videos/" \
-    --geotag_source "blackvue_videos"
+```sh
+# Start capturing 2.5 seconds after start GPS recording
+mapillary_tools video_process MY_VIDEO_DIR \
+    --geotag_source "gpx" \
+    --geotag_source_path MY_EXTERNAL_GPS.gpx \
+    --interpolation_use_gpx_start_time \
+    --interpolation_offset_time 2.5 \
+    --video_sample_distance -1 --video_sample_interval 2
 ```
 
-### Authenticate
+## Authenticate
 
 The command `authenticate` will update the user credentials stored in the config file.
 
-#### Examples
+### Examples
 
 Authenticate new user:
 
-```shell
+```sh
 mapillary_tools authenticate
 ```
 
-Authenticate for user `mly_user`. If the user is already authenticated, it will update the credentials in the config:
+Authenticate for user `my_username`. If the user is already authenticated, it will update the credentials in the config:
 
-```shell
-mapillary_tools authenticate --user_name "mly_user"
+```sh
+mapillary_tools authenticate --user_name "my_username"
 ```
 
-### Aliases
+## Image Description
 
-#### `process_and_upload`
-
-`process_and_upload` command will run `process` and `upload` commands consecutively with combined required and optional
-arguments. It is equivalent to:
-
-```shell
-mapillary_tools process "path/to/images/"
-mapillary_tools upload  "path/to/images/"
-```
-
-#### `video_process`
-
-`video_process` command will run `sample_video` and `process` commands consecutively with combined required and optional
-arguments. It is equivalent to:
-
-```shell
-mapillary_tools sample_video "path/to/videos/" "path/to/images/"
-mapillary_tools upload "path/to/images/"
-```
-
-#### `video_process_and_upload`
-
-`video_process_and_upload` command will run `sample_video` and `process_and_upload` commands consecutively with combined
-required and optional arguments. It is equivalent to:
-
-```shell
-mapillary_tools sample_video "path/to/videos/" "path/to/videos/mapillary_sampled_video_frames/"
-mapillary_tools process_and_upload "path/to/videos/mapillary_sampled_video_frames/"
-```
-
-## Advanced Usage
-
-### Image Description
-
-As the output, the `procss` command generates `mapillary_image_description.json` under the image directory by default.
-The file contains an array of objects, each of which records the metadata of one image in the image directory. The
-metadata is validated
-by [the image description schema](https://github.com/mapillary/mapillary_tools/tree/master/schema/image_description_schema.json)
-. Here is a minimal example:
+The output of the [`process`](#process) command is a JSON array of objects that describes metadata for each image or video.
+The metadata is validated by the [image description schema](https://github.com/mapillary/mapillary_tools/blob/main/schema/image_description_schema.json).
+Here is a minimal example:
 
 ```json
 [
@@ -304,226 +322,123 @@ by [the image description schema](https://github.com/mapillary/mapillary_tools/t
     "MAPLatitude": 58.5927694,
     "MAPLongitude": 16.1840944,
     "MAPCaptureTime": "2021_02_13_13_24_41_140",
-    "filename": "IMG_0291.jpg"
+    "filename": "/MY_IMAGE_DIR/IMG_0291.jpg"
   },
   {
     "error": {
       "type": "MapillaryGeoTaggingError",
       "message": "Unable to extract GPS Longitude or GPS Latitude from the image"
     },
-    "filename": "IMG_0292.jpg"
+    "filename": "/MY_IMAGE_DIR/IMG_0292.jpg"
   }
 ]
 ```
 
-The `upload` command then takes the image description file as the input, [zip images](#zip-images) with the specified
-metadata, and then upload. The required `filename` property is used to associate images and metadata objects. Objects
-that contain `error` property will be ignored.
+Users may create or manipulate the image description file before passing them to the [`upload`](#upload) command. Here are a few examples:
 
-#### Examples
+```sh
+# Remove images outside the bounding box and map matching the rest images on the road network
+mapillary_tools process MY_IMAGE_DIR | \
+    ./filter_by_bbox.py 5.9559,45.818,10.4921,47.8084  | \
+    ./map_match.py > /tmp/mapillary_image_description.json
 
-Write and read the image description file in another location. This is useful if the image directory is readonly.
-
-```shell
-mapillary_tools process "path/to/images/" --desc_path "description.json"
-mapillary_tools upload  "path/to/images/" --desc_path "description.json"
-# equivalent to
-mapillary_tools process_and_upload  "path/to/images/" --desc_path "description.json"
+# Upload the processed images
+mapillary_tools upload  MY_IMAGE_DIR --desc_path /tmp/mapillary_image_description.json
 ```
 
-Edit the description file with your own scripts, e.g. filter out images outside a bounding box, or snap image locations
-to the nearest roads:
-
-```shell
-mapillary_tools process "path/to/images/" --desc_path - \
-    | ./filter_by_bbox.py 5.9559,45.818,10.4921,47.8084 \
-    | ./map_match.py > "description.json"
-mapillary_tools upload  "path/to/images/" --desc_path "description.json"
+```sh
+# Converts captures.csv to an image description file
+./custom_csv_to_description.sh captures.csv | mapillary_tools upload MY_IMAGE_DIR --desc_path -
 ```
 
-Geotag from a custom CSV format.
-
-```shell
-./custom_csv_to_description.sh special.csv | mapillary_tools upload "path/to/images/" --desc_path -
-```
-
-Geotag from a custom video format.
-
-```shell
-# sample with ffmpeg
-ffmpeg -i "path/to/video.mp4" -vf fps=1/1 -qscale 1 -nostdin "path/to/images/video_%06d.jpg"
-# extract geotags from the videos (or other sources)
-./geotag_from_custom_video.sh "path/to/video.mp4" > "description.json"
-# upload
-mapillary_tools upload "path/to/images/" --desc_path "description.json"
-```
-
-### Zip Images
+## Zip Images
 
 When [uploading](#upload) an image directory, internally the `upload` command will zip sequences in the temporary
 directory (`TMPDIR`) and then upload these zip files.
 
-Mapillary Tools provides `zip` command that allows users to specify where to store the zip files, usually somewhere with
+mapillary_tools provides `zip` command that allows users to specify where to store the zip files, usually somewhere with
 faster IO or more free space.
 
-#### Examples:
+```sh
+# Zip processed images in MY_IMAGE_DIR and write zip files in MY_ZIPFILES
+mapillary_tools zip MY_IMAGE_DIR MY_ZIPFILES
 
-Zip processed images in `path/to/images/` and write zip files in `path/to/zipped_images/`:
-
-```shell
-mapillary_tools zip "path/to/images/" "path/to/zipped_images/"
+# Upload all the zip files (*.zip) in MY_ZIPFILES:
+mapillary_tools upload --file_types zip MY_ZIPFILES
 ```
 
-Choose the image description file to write when zipping images:
+# Development
 
-```shell
-mapillary_tools zip "path/to/images/" "path/to/zipped_images/" \
-    --desc_path "path/to/image_description.json"
-```
-
-Then upload the zip files separately:
-
-```shell
-mapillary_tools upload path/to/zipped_images/*.zip
-```
-
-### Upload API
-
-`mapillary_tools` provides a simple Upload API interface:
-
-```python
-class Uploader:
-    def __init__(self, user_items: UserItem, emitter: EventEmitter = None, dry_run=False): ...
-
-    def upload_zipfile(self, zip_path: str) -> Optional[int]: ...
-
-    def upload_blackvue(self, blackvue_path: str) -> Optional[int]: ...
-
-    def upload_images(self, descs: List[ImageDescriptionFile]) -> Dict[str, int]: ...
-```
-
-#### Examples
-
-```python
-import os
-from mapillary_tools import uploader
-
-# To obtain your user access token, check https://www.mapillary.com/developer/api-documentation/#authentication
-user_item = {
-    "user_upload_token": "YOUR_USER_ACCESS_TOKEN",
-    "MAPOrganizationKey": 1234,
-}
-mly_uploader = uploader.Uploader(user_item)
-
-descs = [
-    {
-        "MAPLatitude": 58.5927694,
-        "MAPLongitude": 16.1840944,
-        "MAPCaptureTime": "2021_02_13_13_24_41_140",
-        "filename": "path/to/IMG_0291.jpg",
-        "MAPSequenceUUID": "sequence_1",
-    },
-    {
-        "MAPLatitude": 58.5927694,
-        "MAPLongitude": 16.1840944,
-        "MAPCaptureTime": "2021_02_13_13_24_41_140",
-        "filename": "path/to/IMG_0292.jpg",
-        "MAPSequenceUUID": "sequence_2",
-    },
-]
-
-# Upload images as 2 sequences
-mly_uploader.upload_images(descs)
-
-# Zip images
-uploader.zip_images(descs, "path/to/zip_dir")
-
-# Upload zip files
-for zip_path in os.listdir("path/to/zip_dir"):
-    if zip_path.endswith(".zip"):
-        mly_uploader.upload_zipfile(zip_path)
-
-# Upload blackvue videos directly
-mly_uploader.upload_blackvue("path/to/blackvue.mp4")
-```
-
-See more examples in
-the [unit tests](https://github.com/mapillary/mapillary_tools/blob/main/tests/unit/test_uploader.py) or the upload
-command [implementation](https://github.com/mapillary/mapillary_tools/blob/main/mapillary_tools/upload.py).
-
-## Troubleshooting
-
-In case of any issues with the installation and usage of `mapillary_tools`, check this section in case it has already
-been addressed, otherwise, open an issue on GitHub.
-
-### General
-
-- In case of any issues, it is always safe to try and rerun the failing command while specifying `--verbose` to see more
-  information printed out. Uploaded images should not get uploaded more than once and should not be processed after
-  uploading. mapillary_tools should take care of that, if it occurs otherwise, please open an issue on GitHub.
-- Make sure you run the latest version of `mapillary_tools`, which you can check with `mapillary_tools --version`. When
-  installing the latest version, don't forget you need to specify `--upgrade`.
-- Advanced user are encouraged to explore the processed data and the image description file in
-  the `path/to/images/mapillary_image_description.json` to get more insight in the failure.
-
-### Run time issues
-
-- HTTP Errors can occur due to poor network connection or high load on the import pipeline. In most cases the images
-  eventually get uploaded regardless. But in some cases HTTP Errors can occur due to authentication issues, which can be
-  resolved by either removing the config file with the users credentials, located in `~/.config/mapillary/config` or
-  running `mapillary_tools authenticate`.
-
-- Missing required data is often the reason for failed uploads, especially if the processing included parsing external
-  data like a gps trace. Images are aligned with a gps trace based on the image capture time and gps time, where the
-  default assumption is that both are in UTC. Check the beginning and end date of your capture and the beginning and end
-  date of the gps trace to make sure that the image capture time is in the scope of the gps trace. To correct any offset
-  between the two capture times, you can specify `--offset_time "offset time"`.
-
-### Upload quality issues
-
-- Some devices do not store the camera direction properly, often storing only 0. Camera direction will get derived based
-  on latitude and longitude only if the camera direction is not set or `--interpolate_directions` is specified. Before
-  processing and uploading images, make sure that the camera direction is either correct or missing and in case it is
-  present but incorrect, you specify `--interpolate_directions`.
-
-## Development
+## Setup
 
 Clone the repository:
 
-```shell
+```sh
 git clone git@github.com:mapillary/mapillary_tools.git
 cd mapillary_tools
 ```
 
 Set up the virtual environment. It is optional but recommended:
 
-```shell
-python3 -m venv venv
-source venv/bin/activate # For Windows, run: .\venv\Scripts\activate
-# verify if the venv is activated
-which python3
+```sh
+pip install pipenv
 ```
 
 Install dependencies:
 
-```shell
-python3 -m pip install -r requirements.txt -r requirements-dev.txt
+```sh
+pipenv install -r requirements.txt
+pipenv install -r requirements-dev.txt
+```
+
+Enter the virtualenv shell:
+
+```sh
+pipenv shell
 ```
 
 Run the code from the repository:
 
-```shell
+```sh
 python3 -m mapillary_tools.commands --version
 ```
 
+## Tests
+
 Run tests:
 
-```shell
-pytest tests
+```sh
+# test all cases
+python3 -m pytest -s -vv tests
+# or test a single case specifically
+python3 -m pytest -s -vv tests/unit/test_camm_parser.py::test_build_and_parse
 ```
 
 Run linting:
 
-```shell
+```sh
+# format code
 black mapillary_tools tests
+# sort imports
+usort format mapillary_tools tests
+```
+
+## Release and Build
+
+```sh
+# Assume you are releasing v0.9.1a2 (alpha2)
+
+# Tag your local branch
+# Use -f here to replace the existing one
+git tag -f v0.9.1a2
+
+# Push the tagged commit first if it is not there yet
+git push origin
+
+# Push ALL local tags (TODO: How to push a specific tag?)
+# Use -f here to replace the existing tags in the remote repo
+git push origin --tags -f
+
+# The last step will trigger CI to publish a draft release with binaries built
+# in https://github.com/mapillary/mapillary_tools/releases
 ```

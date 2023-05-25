@@ -1,86 +1,146 @@
+import hashlib
 import os
 import typing as T
-import hashlib
+from pathlib import Path
 
 
-def md5sum_fp(fp: T.IO[bytes]) -> str:
-    md5 = hashlib.md5()
+# Use "hashlib._Hash" instead of hashlib._Hash because:
+# AttributeError: module 'hashlib' has no attribute '_Hash'
+def md5sum_fp(
+    fp: T.IO[bytes], md5: T.Optional["hashlib._Hash"] = None
+) -> "hashlib._Hash":
+    if md5 is None:
+        md5 = hashlib.md5()
     while True:
         buf = fp.read(1024 * 1024 * 32)
         if not buf:
             break
         md5.update(buf)
-    return md5.hexdigest()
+    return md5
 
 
-def md5sum_bytes(data: bytes) -> str:
-    md5 = hashlib.md5()
-    md5.update(data)
-    return md5.hexdigest()
+def is_image_file(path: Path) -> bool:
+    return path.suffix.lower() in (".jpg", ".jpeg", ".tif", ".tiff", ".pgm", ".pnm")
 
 
-def file_md5sum(path: str) -> str:
-    with open(path, "rb") as fp:
-        return md5sum_fp(fp)
+def is_video_file(path: Path) -> bool:
+    return path.suffix.lower() in (
+        ".mp4",
+        ".avi",
+        ".tavi",
+        ".mov",
+        ".mkv",
+        # GoPro Max video filename extension
+        ".360",
+    )
 
 
-def is_image_file(path: str) -> bool:
-    basename, ext = os.path.splitext(os.path.basename(path))
-    return ext.lower() in (".jpg", ".jpeg", ".tif", ".tiff", ".pgm", ".pnm")
-
-
-def is_video_file(path: str) -> bool:
-    basename, ext = os.path.splitext(os.path.basename(path))
-    return ext.lower() in (".mp4", ".avi", ".tavi", ".mov", ".mkv")
-
-
-def iterate_files(root: str, recursive: bool = False) -> T.Generator[str, None, None]:
+def iterate_files(root: Path, recursive: bool = False) -> T.Generator[Path, None, None]:
     for dirpath, dirnames, files in os.walk(root, topdown=True):
         if not recursive:
             dirnames.clear()
         else:
             dirnames[:] = [name for name in dirnames if not name.startswith(".")]
         for file in files:
-            yield os.path.join(dirpath, file)
-
-
-def get_video_file_list(
-    video_file: str, skip_subfolders: bool = False, abs_path: bool = False
-) -> T.List[str]:
-    files = iterate_files(video_file, not skip_subfolders)
-    return sorted(
-        file if abs_path else os.path.relpath(file, video_file)
-        for file in files
-        if is_video_file(file)
-    )
-
-
-def get_image_file_list(
-    import_path: str, skip_subfolders: bool = False, abs_path: bool = False
-) -> T.List[str]:
-    files = iterate_files(import_path, not skip_subfolders)
-    return sorted(
-        file if abs_path else os.path.relpath(file, import_path)
-        for file in files
-        if is_image_file(file)
-    )
+            if file.startswith("."):
+                continue
+            yield Path(dirpath).joinpath(file)
 
 
 def filter_video_samples(
-    images: T.List[str], video_path: str, skip_subfolders: bool = False
-) -> T.List[str]:
-    if os.path.isdir(video_path):
-        videos = set(
-            os.path.basename(f)
-            for f in get_video_file_list(video_path, skip_subfolders=skip_subfolders)
+    image_paths: T.Sequence[Path],
+    video_path: Path,
+    skip_subfolders: bool = False,
+) -> T.Generator[Path, None, None]:
+    if video_path.is_dir():
+        video_basenames = set(
+            f.name
+            for f in iterate_files(video_path, not skip_subfolders)
+            if is_video_file(f)
         )
     else:
-        videos = {os.path.basename(video_path)}
-    filtered = []
-    for image in images:
-        dirname = os.path.basename(os.path.dirname(os.path.abspath(image)))
-        if dirname in videos:
-            root, _ = os.path.splitext(dirname)
-            if os.path.basename(image).startswith(root + "_"):
-                filtered.append(image)
-    return filtered
+        video_basenames = {video_path.name}
+
+    for image_path in image_paths:
+        # If you want to walk an arbitrary filesystem path upwards,
+        # it is recommended to first call Path.resolve() so as to resolve symlinks and eliminate “..” components.
+        image_dirname = image_path.resolve().parent.name
+        if image_dirname in video_basenames:
+            root, _ = os.path.splitext(image_dirname)
+            if image_path.name.startswith(root + "_"):
+                yield image_path
+
+
+def deduplicate_paths(paths: T.Iterable[Path]) -> T.Generator[Path, None, None]:
+    resolved_paths: T.Set[Path] = set()
+    for p in paths:
+        resolved = p.resolve()
+        if resolved not in resolved_paths:
+            resolved_paths.add(resolved)
+            yield p
+
+
+def find_images(
+    import_paths: T.Sequence[Path],
+    skip_subfolders: bool = False,
+    check_file_suffix: bool = False,
+) -> T.List[Path]:
+    image_paths: T.List[Path] = []
+    for path in import_paths:
+        if path.is_dir():
+            image_paths.extend(
+                file
+                for file in iterate_files(path, not skip_subfolders)
+                if is_image_file(file)
+            )
+        else:
+            if check_file_suffix:
+                if is_image_file(path):
+                    image_paths.append(path)
+            else:
+                image_paths.append(path)
+    return list(deduplicate_paths(image_paths))
+
+
+def find_videos(
+    import_paths: T.Sequence[Path],
+    skip_subfolders: bool = False,
+    check_file_suffix: bool = False,
+) -> T.List[Path]:
+    video_paths: T.List[Path] = []
+    for path in import_paths:
+        if path.is_dir():
+            video_paths.extend(
+                file
+                for file in iterate_files(path, not skip_subfolders)
+                if is_video_file(file)
+            )
+        else:
+            if check_file_suffix:
+                if is_video_file(path):
+                    video_paths.append(path)
+            else:
+                video_paths.append(path)
+    return list(deduplicate_paths(video_paths))
+
+
+def find_zipfiles(
+    import_paths: T.Sequence[Path],
+    skip_subfolders: bool = False,
+    check_file_suffix: bool = False,
+) -> T.List[Path]:
+    zip_paths: T.List[Path] = []
+    for path in import_paths:
+        if path.is_dir():
+            zip_paths.extend(
+                file
+                for file in iterate_files(path, not skip_subfolders)
+                if file.suffix.lower() in [".zip"]
+            )
+        else:
+            if check_file_suffix:
+                if path.suffix.lower() in [".zip"]:
+                    zip_paths.append(path)
+            else:
+                zip_paths.append(path)
+    return list(deduplicate_paths(zip_paths))

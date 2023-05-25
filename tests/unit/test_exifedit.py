@@ -1,27 +1,25 @@
-import os
-import unittest
-from PIL import Image, ExifTags, TiffImagePlugin
 import datetime
+import os
 import shutil
+import unittest
+from pathlib import Path
 
 import py.path
 
 from mapillary_tools.exif_write import ExifEdit
-from mapillary_tools.geo import decimal_to_dms
+from PIL import ExifTags, Image, TiffImagePlugin
 
-"""Initialize all the neccessary data"""
+this_file = Path(__file__)
+this_file_dir = this_file.parent
+data_dir = this_file_dir.joinpath("data")
 
-this_file = os.path.abspath(__file__)
-this_file_dir = os.path.dirname(this_file)
-data_dir = os.path.join(this_file_dir, "data")
-
-EMPTY_EXIF_FILE = os.path.join(data_dir, "empty_exif.jpg")
-EMPTY_EXIF_FILE_TEST = os.path.join(data_dir, "tmp", "empty_exif.jpg")
-NON_EXISTING_FILE = os.path.join(data_dir, "tmp", "non_existing_file.jpg")
-CORRUPT_EXIF_FILE = os.path.join(data_dir, "corrupt_exif.jpg")
-CORRUPT_EXIF_FILE_2 = os.path.join(data_dir, "corrupt_exif_2.jpg")
-FIXED_EXIF_FILE = os.path.join(data_dir, "fixed_exif.jpg")
-FIXED_EXIF_FILE_2 = os.path.join(data_dir, "fixed_exif_2.jpg")
+EMPTY_EXIF_FILE = data_dir.joinpath("empty_exif.jpg")
+EMPTY_EXIF_FILE_TEST = data_dir.joinpath(data_dir, "tmp", "empty_exif.jpg")
+NON_EXISTING_FILE = data_dir.joinpath("tmp", "non_existing_file.jpg")
+CORRUPT_EXIF_FILE = data_dir.joinpath("corrupt_exif.jpg")
+CORRUPT_EXIF_FILE_2 = data_dir.joinpath("corrupt_exif_2.jpg")
+FIXED_EXIF_FILE = data_dir.joinpath("fixed_exif.jpg")
+FIXED_EXIF_FILE_2 = data_dir.joinpath("fixed_exif_2.jpg")
 
 # more info on the standard exif tags
 # https://sno.phy.queensu.ca/~phil/exiftool/TagNames/EXIF.html
@@ -44,7 +42,6 @@ def rational_to_tuple(rational):
 
 
 def add_image_description_general(test_obj, filename):
-
     test_dictionary = {
         "key_numeric": 1,
         "key_string": "one",
@@ -64,8 +61,7 @@ def add_image_description_general(test_obj, filename):
     )
 
 
-def add_orientation_general(test_obj, filename):
-
+def add_orientation_general(test_obj, filename: Path):
     test_orientation = 2
 
     empty_exifedit = ExifEdit(filename)
@@ -79,8 +75,7 @@ def add_orientation_general(test_obj, filename):
     )
 
 
-def add_date_time_original_general(test_obj, filename):
-
+def add_date_time_original_general(test_obj, filename: Path):
     test_datetime = datetime.datetime(2016, 8, 31, 8, 29, 26, 249000)
 
     empty_exifedit = ExifEdit(filename)
@@ -90,15 +85,20 @@ def add_date_time_original_general(test_obj, filename):
 
     exif_data = load_exif()
     test_obj.assertEqual(
-        test_datetime.strftime("%Y:%m:%d %H:%M:%S.%f")[:-3],
+        test_datetime.strftime("%Y:%m:%d %H:%M:%S"),
         exif_data.get_ifd(EXIF_PRIMARY_TAGS_DICT["ExifOffset"])[
             EXIF_PRIMARY_TAGS_DICT["DateTimeOriginal"]
+        ],
+    )
+    test_obj.assertEqual(
+        "249000",
+        exif_data.get_ifd(EXIF_PRIMARY_TAGS_DICT["ExifOffset"])[
+            EXIF_PRIMARY_TAGS_DICT["SubsecTimeOriginal"]
         ],
     )
 
 
 def add_lat_lon_general(test_obj, filename):
-
     test_latitude = 50.5475894785
     test_longitude = 15.595866685
     precision = 1e7
@@ -113,8 +113,8 @@ def add_lat_lon_general(test_obj, filename):
 
     test_obj.assertEqual(
         (
-            decimal_to_dms(abs(test_latitude), precision),
-            decimal_to_dms(abs(test_longitude), precision),
+            ExifEdit.decimal_to_dms(abs(test_latitude), precision),
+            ExifEdit.decimal_to_dms(abs(test_longitude), precision),
             "N",
             "E",
         ),
@@ -127,8 +127,7 @@ def add_lat_lon_general(test_obj, filename):
     )
 
 
-def add_altitude_general(test_obj, filename):
-
+def add_altitude_general(test_obj, filename: Path):
     test_altitude = 15.5
     test_altitude_precision = 100
 
@@ -149,7 +148,6 @@ def add_altitude_general(test_obj, filename):
 
 
 def add_repeatedly_time_original_general(test_obj, filename):
-
     test_datetime = datetime.datetime(2016, 8, 31, 8, 29, 26, 249000)
 
     empty_exifedit = ExifEdit(filename)
@@ -166,7 +164,7 @@ def add_repeatedly_time_original_general(test_obj, filename):
 
     exif_data = load_exif()
     test_obj.assertEqual(
-        test_datetime.strftime("%Y:%m:%d %H:%M:%S.%f")[:-3],
+        test_datetime.strftime("%Y:%m:%d %H:%M:%S"),
         exif_data.get_ifd(EXIF_PRIMARY_TAGS_DICT["ExifOffset"])[
             EXIF_PRIMARY_TAGS_DICT["DateTimeOriginal"]
         ],
@@ -174,7 +172,6 @@ def add_repeatedly_time_original_general(test_obj, filename):
 
 
 def add_direction_general(test_obj, filename):
-
     test_direction = 1
     test_direction_ref = "T"
     test_direction_precision = 100
@@ -209,31 +206,24 @@ class ExifEditTests(unittest.TestCase):
         shutil.rmtree(os.path.join(data_dir, "tmp"))
 
     def test_add_image_description(self):
-
         add_image_description_general(self, EMPTY_EXIF_FILE_TEST)
 
     def test_add_orientation(self):
-
         add_orientation_general(self, EMPTY_EXIF_FILE_TEST)
 
     def test_add_date_time_original(self):
-
         add_date_time_original_general(self, EMPTY_EXIF_FILE_TEST)
 
     def test_add_lat_lon(self):
-
         add_lat_lon_general(self, EMPTY_EXIF_FILE_TEST)
 
     def test_add_altitude(self):
-
         add_altitude_general(self, EMPTY_EXIF_FILE_TEST)
 
     def test_add_direction(self):
-
         add_direction_general(self, EMPTY_EXIF_FILE_TEST)
 
     def test_write_to_non_existing_file(self):
-
         test_datetime = datetime.datetime(2016, 8, 31, 8, 29, 26, 249000)
 
         empty_exifedit = ExifEdit(EMPTY_EXIF_FILE_TEST)
@@ -243,18 +233,16 @@ class ExifEditTests(unittest.TestCase):
 
         exif_data = load_exif(NON_EXISTING_FILE)
         self.assertEqual(
-            test_datetime.strftime("%Y:%m:%d %H:%M:%S.%f")[:-3],
+            test_datetime.strftime("%Y:%m:%d %H:%M:%S"),
             exif_data.get_ifd(EXIF_PRIMARY_TAGS_DICT["ExifOffset"])[
                 EXIF_PRIMARY_TAGS_DICT["DateTimeOriginal"]
             ],
         )
 
     def test_add_repeatedly_time_original(self):
-
         add_repeatedly_time_original_general(self, EMPTY_EXIF_FILE_TEST)
 
     def test_add_time_original_to_existing_exif(self):
-
         test_altitude = 15.5
         test_altitude_precision = 100
 
@@ -292,12 +280,12 @@ class ExifEditTests(unittest.TestCase):
         exif_data = load_exif()
         exif_gps_info = exif_data.get_ifd(EXIF_PRIMARY_TAGS_DICT["GPSInfo"])
 
-        assert decimal_to_dms(abs(test_latitude), precision) == rational_to_tuple(
-            exif_gps_info[EXIF_GPS_TAGS_DICT["GPSLatitude"]]
-        )
-        assert decimal_to_dms(abs(test_longitude), precision) == rational_to_tuple(
-            exif_gps_info[EXIF_GPS_TAGS_DICT["GPSLongitude"]]
-        )
+        assert ExifEdit.decimal_to_dms(
+            abs(test_latitude), precision
+        ) == rational_to_tuple(exif_gps_info[EXIF_GPS_TAGS_DICT["GPSLatitude"]])
+        assert ExifEdit.decimal_to_dms(
+            abs(test_longitude), precision
+        ) == rational_to_tuple(exif_gps_info[EXIF_GPS_TAGS_DICT["GPSLongitude"]])
         assert "S" == exif_gps_info[EXIF_GPS_TAGS_DICT["GPSLatitudeRef"]]
         assert "W" == exif_gps_info[EXIF_GPS_TAGS_DICT["GPSLongitudeRef"]]
 
@@ -380,14 +368,10 @@ def test_exif_write(tmpdir: py.path.local):
         assert image_bytes != content
         assert content == orig
 
-        exif = ExifEdit(str(image_path))
+        exif = ExifEdit(Path(image_path))
         exif.add_orientation(1)
         exif.write()
 
         with open(image_path, "rb") as fp:
             content = fp.read()
         assert image_bytes == content
-
-
-if __name__ == "__main__":
-    unittest.main()

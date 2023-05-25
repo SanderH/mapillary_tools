@@ -1,37 +1,57 @@
-import requests
-import os
+import enum
 import io
-import sys
+import json
+import logging
+import os
+import random
 import typing as T
 
-if sys.version_info >= (3, 8):
-    from typing import Literal  # pylint: disable=no-name-in-module
-else:
-    from typing_extensions import Literal
+import requests
 
-from .api_v4 import MAPILLARY_GRAPH_API_ENDPOINT
-
+LOG = logging.getLogger(__name__)
 MAPILLARY_UPLOAD_ENDPOINT = os.getenv(
     "MAPILLARY_UPLOAD_ENDPOINT", "https://rupload.facebook.com/mapillary_public_uploads"
 )
-DEFAULT_CHUNK_SIZE = 1024 * 1024 * 64
+MAPILLARY_GRAPH_API_ENDPOINT = os.getenv(
+    "MAPILLARY_GRAPH_API_ENDPOINT", "https://graph.mapillary.com"
+)
+DEFAULT_CHUNK_SIZE = 1024 * 1024 * 16  # 16MB
+# According to the docs, UPLOAD_REQUESTS_TIMEOUT can be a tuple of
+# (connection_timeout, read_timeout): https://requests.readthedocs.io/en/latest/user/advanced/#timeouts
+# In my test, however, the connection_timeout rules both connection timeout and read timeout.
+# i.e. if your the server does not respond within this timeout, it will throw:
+# ConnectionError: ('Connection aborted.', timeout('The write operation timed out'))
+# So let us make sure the largest possible chunks can be uploaded before this timeout for now,
+REQUESTS_TIMEOUT = (20, 20)  # 20 seconds
+UPLOAD_REQUESTS_TIMEOUT = (30 * 60, 30 * 60)  # 30 minutes
 
 
-FileType = Literal["zip", "mly_blackvue_video"]
+class ClusterFileType(enum.Enum):
+    ZIP = "zip"
+    BLACKVUE = "mly_blackvue_video"
+    CAMM = "mly_camm_video"
 
 
-class UploadHTTPError(Exception):
-    pass
+def _sanitize_headers(headers: T.Dict):
+    return {
+        k: v
+        for k, v in headers.items()
+        if k.lower() not in ["authorization", "cookie", "x-fb-access-token"]
+    }
 
 
-def wrap_http_exception(ex: requests.HTTPError):
-    resp = ex.response
-    lines = [
-        f"{ex.request.method} {resp.url}",
-        f"> HTTP Status: {ex.response.status_code}",
-        f"{ex.response.text}",
-    ]
-    return UploadHTTPError("\n".join(lines))
+_S = T.TypeVar("_S", str, bytes)
+
+
+def _truncate_end(s: _S) -> _S:
+    MAX_LENGTH = 512
+    if MAX_LENGTH < len(s):
+        if isinstance(s, bytes):
+            return s[:MAX_LENGTH] + b"..."
+        else:
+            return str(s[:MAX_LENGTH]) + "..."
+    else:
+        return s
 
 
 class UploadService:
@@ -39,8 +59,9 @@ class UploadService:
     entity_size: int
     session_key: str
     callbacks: T.List[T.Callable[[bytes, T.Optional[requests.Response]], None]]
-    file_type: FileType
+    cluster_filetype: ClusterFileType
     organization_id: T.Optional[T.Union[str, int]]
+    chunk_size: int
 
     def __init__(
         self,
@@ -48,28 +69,36 @@ class UploadService:
         session_key: str,
         entity_size: int,
         organization_id: T.Optional[T.Union[str, int]] = None,
-        file_type: FileType = "zip",
+        cluster_filetype: ClusterFileType = ClusterFileType.ZIP,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
     ):
         if entity_size <= 0:
             raise ValueError(f"Expect positive entity size but got {entity_size}")
 
-        if file_type.lower() not in ["zip", "mly_blackvue_video"]:
-            raise ValueError(f"Invalid file type {file_type}")
+        if chunk_size <= 0:
+            raise ValueError("Expect positive chunk size")
 
         self.user_access_token = user_access_token
         self.session_key = session_key
         self.entity_size = entity_size
         self.organization_id = organization_id
-        self.file_type = T.cast(FileType, file_type.lower())
+        #  validate the input
+        self.cluster_filetype = ClusterFileType(cluster_filetype)
         self.callbacks = []
+        self.chunk_size = chunk_size
 
     def fetch_offset(self) -> int:
         headers = {
             "Authorization": f"OAuth {self.user_access_token}",
         }
+        url = f"{MAPILLARY_UPLOAD_ENDPOINT}/{self.session_key}"
+        LOG.debug("GET %s", url)
         resp = requests.get(
-            f"{MAPILLARY_UPLOAD_ENDPOINT}/{self.session_key}", headers=headers
+            url,
+            headers=headers,
+            timeout=REQUESTS_TIMEOUT,
         )
+        LOG.debug("HTTP response %s: %s", resp.status_code, resp.content)
         resp.raise_for_status()
         data = resp.json()
         return data["offset"]
@@ -78,25 +107,22 @@ class UploadService:
         self,
         data: T.IO[bytes],
         offset: T.Optional[int] = None,
-        chunk_size: int = DEFAULT_CHUNK_SIZE,
     ) -> str:
-        if chunk_size <= 0:
-            raise ValueError("Expect positive chunk size")
-
         if offset is None:
             offset = self.fetch_offset()
 
-        entity_type_map: T.Dict[FileType, str] = {
-            "zip": "application/zip",
-            "mly_blackvue_video": "video/mp4",
+        entity_type_map: T.Dict[ClusterFileType, str] = {
+            ClusterFileType.ZIP: "application/zip",
+            ClusterFileType.BLACKVUE: "video/mp4",
+            ClusterFileType.CAMM: "video/mp4",
         }
 
-        entity_type = entity_type_map[self.file_type]
+        entity_type = entity_type_map[self.cluster_filetype]
 
         data.seek(offset, io.SEEK_CUR)
 
         while True:
-            chunk = data.read(chunk_size)
+            chunk = data.read(self.chunk_size)
             # it is possible to upload an empty chunk here
             # in order to return the handle
             headers = {
@@ -106,13 +132,20 @@ class UploadService:
                 "X-Entity-Name": self.session_key,
                 "X-Entity-Type": entity_type,
             }
+            url = f"{MAPILLARY_UPLOAD_ENDPOINT}/{self.session_key}"
+            LOG.debug("POST %s HEADERS %s", url, json.dumps(_sanitize_headers(headers)))
             resp = requests.post(
-                f"{MAPILLARY_UPLOAD_ENDPOINT}/{self.session_key}",
+                url,
                 headers=headers,
                 data=chunk,
+                timeout=UPLOAD_REQUESTS_TIMEOUT,
+            )
+            LOG.debug(
+                "HTTP response %s: %s", resp.status_code, _truncate_end(resp.content)
             )
             resp.raise_for_status()
             offset += len(chunk)
+            LOG.debug("The next offset will be: %s", offset)
             for callback in self.callbacks:
                 callback(chunk, resp)
             # we can assert that offset == self.fetch_offset(session_key)
@@ -133,22 +166,27 @@ class UploadService:
                 f"Upload server error: File handle not found in the upload response {resp.text}"
             )
 
-    def finish(self, file_handle: str) -> int:
+    def finish(self, file_handle: str) -> str:
         headers = {
             "Authorization": f"OAuth {self.user_access_token}",
         }
         data: T.Dict[str, T.Union[str, int]] = {
             "file_handle": file_handle,
-            "file_type": self.file_type,
+            "file_type": self.cluster_filetype.value,
         }
         if self.organization_id is not None:
             data["organization_id"] = self.organization_id
 
+        url = f"{MAPILLARY_GRAPH_API_ENDPOINT}/finish_upload"
+
+        LOG.debug("POST %s HEADERS %s", url, json.dumps(_sanitize_headers(headers)))
         resp = requests.post(
-            f"{MAPILLARY_GRAPH_API_ENDPOINT}/finish_upload",
+            url,
             headers=headers,
             json=data,
+            timeout=REQUESTS_TIMEOUT,
         )
+        LOG.debug("HTTP response %s: %s", resp.status_code, _truncate_end(resp.content))
 
         resp.raise_for_status()
 
@@ -160,10 +198,7 @@ class UploadService:
                 f"Upload server error: failed to create the cluster {resp.text}"
             )
 
-        return T.cast(int, cluster_id)
-
-
-import random
+        return T.cast(str, cluster_id)
 
 
 # A mock class for testing only
@@ -173,13 +208,12 @@ class FakeUploadService(UploadService):
         self._upload_path = os.getenv(
             "MAPILLARY_UPLOAD_PATH", "mapillary_public_uploads"
         )
-        self._error_ratio = 0.2
+        self._error_ratio = 0.1
 
     def upload(
         self,
         data: T.IO[bytes],
         offset: T.Optional[int] = None,
-        chunk_size: int = DEFAULT_CHUNK_SIZE,
     ) -> str:
         if offset is None:
             offset = self.fetch_offset()
@@ -188,7 +222,7 @@ class FakeUploadService(UploadService):
         with open(filename, "ab") as fp:
             data.seek(offset, io.SEEK_CUR)
             while True:
-                chunk = data.read(chunk_size)
+                chunk = data.read(self.chunk_size)
                 if not chunk:
                     break
                 # fail here means nothing uploaded
@@ -206,58 +240,17 @@ class FakeUploadService(UploadService):
                     callback(chunk, None)
         return self.session_key
 
-    def finish(self, _: str) -> int:
-        return 0
+    def finish(self, _: str) -> str:
+        return "0"
 
     def fetch_offset(self) -> int:
+        if random.random() <= self._error_ratio:
+            raise requests.ConnectionError(
+                f"TEST ONLY: Partially uploaded with error ratio {self._error_ratio}"
+            )
         filename = os.path.join(self._upload_path, self.session_key)
         if not os.path.exists(filename):
             return 0
         with open(filename, "rb") as fp:
             fp.seek(0, io.SEEK_END)
             return fp.tell()
-
-
-def _file_stats(fp: T.IO[bytes]):
-    md5 = hashlib.md5()
-    while True:
-        buf = fp.read(DEFAULT_CHUNK_SIZE)
-        if not buf:
-            break
-        md5.update(buf)
-    fp.seek(0, os.SEEK_END)
-    return md5.hexdigest(), fp.tell()
-
-
-if __name__ == "__main__":
-    import sys, hashlib, os
-    import tqdm
-
-    user_access_token = os.getenv("MAPILLARY_TOOLS_USER_ACCESS_TOKEN")
-    if not user_access_token:
-        raise RuntimeError("MAPILLARY_TOOLS_USER_ACCESS_TOKEN is required")
-
-    path = sys.argv[1]
-    with open(path, "rb") as fp:
-        md5sum, entity_size = _file_stats(fp)
-    session_key = sys.argv[2] if sys.argv[2:] else f"mly_tools_test_{md5sum}"
-    service = UploadService(user_access_token, session_key, entity_size)
-
-    print(f"session key: {session_key}")
-    print(f"entity size: {entity_size}")
-    print(f"initial offset: {service.fetch_offset()}")
-
-    with open(path, "rb") as fp:
-        with tqdm.tqdm(
-            total=entity_size,
-            initial=service.fetch_offset(),
-            unit="B",
-            unit_scale=True,
-            unit_divisor=1024,
-        ) as pbar:
-            service.callbacks.append(lambda chunk, resp: pbar.update(len(chunk)))
-            try:
-                file_handle = service.upload(fp)
-            except requests.HTTPError as ex:
-                raise wrap_http_exception(ex)
-    print(file_handle)

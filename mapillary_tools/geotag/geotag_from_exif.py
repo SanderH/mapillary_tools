@@ -1,89 +1,139 @@
+import io
 import logging
-import os
 import typing as T
+from multiprocessing import Pool
+from pathlib import Path
+
+import piexif
 
 from tqdm import tqdm
 
-from .geotag_from_generic import GeotagFromGeneric
-from .. import types
-from ..exif_read import ExifRead
+from .. import exif_write, geo, types
 from ..exceptions import MapillaryGeoTaggingError
+from ..exif_read import ExifRead
+
+from .geotag_from_generic import GeotagFromGeneric
 
 LOG = logging.getLogger(__name__)
 
 
+def verify_image_exif_write(
+    metadata: types.ImageMetadata,
+    image_data: T.Optional[bytes] = None,
+) -> types.ImageMetadataOrError:
+    if image_data is None:
+        edit = exif_write.ExifEdit(metadata.filename)
+    else:
+        edit = exif_write.ExifEdit(image_data)
+
+    # The cast is to fix the type error in Python3.6:
+    # Argument 1 to "add_image_description" of "ExifEdit" has incompatible type "ImageDescription"; expected "Dict[str, Any]"
+    edit.add_image_description(
+        T.cast(T.Dict, types.desc_file_to_exif(types.as_desc(metadata)))
+    )
+    try:
+        edit.dump_image_bytes()
+    except piexif.InvalidImageDataError as exc:
+        return types.describe_error_metadata(
+            exc,
+            metadata.filename,
+            filetype=types.FileType.IMAGE,
+        )
+    except Exception as exc:
+        # possible error here: struct.error: 'H' format requires 0 <= number <= 65535
+        LOG.warning(
+            "Unknown error test writing image %s", metadata.filename, exc_info=True
+        )
+        return types.describe_error_metadata(
+            exc,
+            metadata.filename,
+            filetype=types.FileType.IMAGE,
+        )
+    return metadata
+
+
 class GeotagFromEXIF(GeotagFromGeneric):
-    def __init__(self, image_dir: str, images: T.List[str]):
-        self.image_dir = image_dir
-        self.images = images
+    def __init__(self, image_paths: T.Sequence[Path]):
+        self.image_paths = image_paths
         super().__init__()
 
-    def to_description(self) -> T.List[types.ImageDescriptionFileOrError]:
-        descs: T.List[types.ImageDescriptionFileOrError] = []
+    @staticmethod
+    def geotag_image(
+        image_path: Path, skip_lonlat_error: bool = False
+    ) -> types.ImageMetadataOrError:
+        with image_path.open("rb") as fp:
+            image_data = fp.read()
+        image_bytesio = io.BytesIO(image_data)
 
-        for image in tqdm(
-            self.images,
-            desc=f"Processing",
-            unit="images",
-            disable=LOG.getEffectiveLevel() <= logging.DEBUG,
-        ):
-            image_path = os.path.join(self.image_dir, image)
+        try:
+            exif = ExifRead(image_bytesio)
+        except Exception as ex:
+            LOG.warning(
+                "Unknown error reading EXIF from image %s",
+                image_path,
+                exc_info=True,
+            )
+            return types.describe_error_metadata(
+                ex, image_path, filetype=types.FileType.IMAGE
+            )
 
-            try:
-                exif = ExifRead(image_path)
-            except Exception as exc0:
-                LOG.warning(
-                    "Unknown error reading EXIF from image %s",
-                    image_path,
-                    exc_info=True,
-                )
-                descs.append({"error": types.describe_error(exc0), "filename": image})
-                continue
-
-            lon, lat = exif.extract_lon_lat()
-            if lat is None or lon is None:
+        lonlat = exif.extract_lon_lat()
+        if lonlat is None:
+            if not skip_lonlat_error:
                 exc = MapillaryGeoTaggingError(
                     "Unable to extract GPS Longitude or GPS Latitude from the image"
                 )
-                descs.append({"error": types.describe_error(exc), "filename": image})
-                continue
-
-            timestamp = exif.extract_capture_time()
-            if timestamp is None:
-                exc = MapillaryGeoTaggingError(
-                    "Unable to extract timestamp from the image"
+                return types.describe_error_metadata(
+                    exc, image_path, filetype=types.FileType.IMAGE
                 )
-                descs.append({"error": types.describe_error(exc), "filename": image})
-                continue
+            lonlat = (0.0, 0.0)
+        lon, lat = lonlat
 
-            angle = exif.extract_direction()
+        capture_time = exif.extract_capture_time()
+        if capture_time is None:
+            exc = MapillaryGeoTaggingError("Unable to extract timestamp from the image")
+            return types.describe_error_metadata(
+                exc, image_path, filetype=types.FileType.IMAGE
+            )
 
-            desc: types.ImageDescriptionFile = {
-                "MAPLatitude": lat,
-                "MAPLongitude": lon,
-                "MAPCaptureTime": types.datetime_to_map_capture_time(timestamp),
-                "filename": image,
-            }
-            if angle is not None:
-                desc["MAPCompassHeading"] = {
-                    "TrueHeading": angle,
-                    "MagneticHeading": angle,
-                }
+        image_metadata = types.ImageMetadata(
+            filename=image_path,
+            md5sum=None,
+            time=geo.as_unix_time(capture_time),
+            lat=lat,
+            lon=lon,
+            alt=exif.extract_altitude(),
+            angle=exif.extract_direction(),
+            width=exif.extract_width(),
+            height=exif.extract_height(),
+            MAPOrientation=exif.extract_orientation(),
+            MAPDeviceMake=exif.extract_make(),
+            MAPDeviceModel=exif.extract_model(),
+        )
 
-            altitude = exif.extract_altitude()
-            if altitude is not None:
-                desc["MAPAltitude"] = altitude
+        image_bytesio.seek(0, io.SEEK_SET)
+        image_metadata.update_md5sum(image_bytesio)
 
-            desc["MAPOrientation"] = exif.extract_orientation()
+        image_bytesio.seek(0, io.SEEK_SET)
+        image_metadata_or_error = verify_image_exif_write(
+            image_metadata,
+            image_data=image_bytesio.read(),
+        )
 
-            make = exif.extract_make()
-            if make is not None:
-                desc["MAPDeviceMake"] = make
+        return image_metadata_or_error
 
-            model = exif.extract_model()
-            if model is not None:
-                desc["MAPDeviceModel"] = model
-
-            descs.append(desc)
-
-        return descs
+    def to_description(self) -> T.List[types.ImageMetadataOrError]:
+        with Pool() as pool:
+            image_metadatas = pool.imap(
+                GeotagFromEXIF.geotag_image,
+                self.image_paths,
+            )
+            return list(
+                tqdm(
+                    image_metadatas,
+                    desc="Extracting geotags from images",
+                    unit="images",
+                    disable=LOG.getEffectiveLevel() <= logging.DEBUG,
+                    total=len(self.image_paths),
+                )
+            )

@@ -1,8 +1,9 @@
-import typing as T
-import sys
 import os
-import requests
+import sys
+import typing as T
 from typing import Union
+
+import requests
 
 if sys.version_info >= (3, 8):
     from typing import Literal  # pylint: disable=no-name-in-module
@@ -15,6 +16,7 @@ MAPILLARY_CLIENT_TOKEN = os.getenv(
 MAPILLARY_GRAPH_API_ENDPOINT = os.getenv(
     "MAPILLARY_GRAPH_API_ENDPOINT", "https://graph.mapillary.com"
 )
+REQUESTS_TIMEOUT = 60  # 1 minutes
 
 
 def get_upload_token(email: str, password: str) -> requests.Response:
@@ -22,6 +24,7 @@ def get_upload_token(email: str, password: str) -> requests.Response:
         f"{MAPILLARY_GRAPH_API_ENDPOINT}/login",
         params={"access_token": MAPILLARY_CLIENT_TOKEN},
         json={"email": email, "password": password, "locale": "en_US"},
+        timeout=REQUESTS_TIMEOUT,
     )
     resp.raise_for_status()
     return resp
@@ -38,6 +41,7 @@ def fetch_organization(
         headers={
             "Authorization": f"OAuth {user_access_token}",
         },
+        timeout=REQUESTS_TIMEOUT,
     )
     resp.raise_for_status()
     return resp
@@ -48,9 +52,7 @@ ActionType = Literal[
 ]
 
 
-def logging(
-    access_token: str, action_type: ActionType, properties: T.Dict
-) -> requests.Response:
+def logging(action_type: ActionType, properties: T.Dict) -> requests.Response:
     resp = requests.post(
         f"{MAPILLARY_GRAPH_API_ENDPOINT}/logging",
         json={
@@ -58,8 +60,9 @@ def logging(
             "properties": properties,
         },
         headers={
-            "Authorization": f"OAuth {access_token}",
+            "Authorization": f"OAuth {MAPILLARY_CLIENT_TOKEN}",
         },
+        timeout=REQUESTS_TIMEOUT,
     )
     resp.raise_for_status()
     return resp

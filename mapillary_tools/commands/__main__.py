@@ -1,14 +1,20 @@
 import argparse
+import enum
 import logging
 import sys
+import typing as T
+from pathlib import Path
 
-from .. import VERSION, exceptions
+from .. import constants, exceptions, VERSION
 from . import (
     authenticate,
     process,
     process_and_upload,
     sample_video,
     upload,
+    upload_blackvue,
+    upload_camm,
+    upload_zip,
     video_process,
     video_process_and_upload,
     zip,
@@ -17,6 +23,9 @@ from . import (
 mapillary_tools_commands = [
     process,
     upload,
+    upload_camm,
+    upload_blackvue,
+    upload_zip,
     sample_video,
     video_process,
     authenticate,
@@ -30,23 +39,23 @@ mapillary_tools_commands = [
 LOG = logging.getLogger("mapillary_tools")
 
 
+# Handle shared arguments/options here
 def add_general_arguments(parser, command):
-    if command == "authenticate":
-        return
-
     if command in ["sample_video", "video_process", "video_process_and_upload"]:
         parser.add_argument(
             "video_import_path",
             help="Path to a video or directory with one or more video files.",
+            type=Path,
         )
         parser.add_argument(
             "import_path",
-            help='Path to where the images from video sampling will be saved. If not specified, it will default to "mapillary_sampled_video_frames" under your video import path',
+            help=f"Path to where the images from video sampling will be saved. [default: {{VIDEO_IMPORT_PATH}}/{constants.SAMPLED_VIDEO_FRAMES_FILENAME}]",
             nargs="?",
+            type=Path,
         )
         parser.add_argument(
             "--skip_subfolders",
-            help="Skip all subfolders and import only the images in the given video_import_path",
+            help="Skip all subfolders and import only the images in the given VIDEO_IMPORT_PATH.",
             action="store_true",
             default=False,
             required=False,
@@ -54,26 +63,20 @@ def add_general_arguments(parser, command):
     elif command in ["upload"]:
         parser.add_argument(
             "import_path",
-            help="Path to your images",
+            help="Path to your images.",
             nargs="+",
+            type=Path,
         )
-    elif command in ["zip"]:
+    elif command in ["process", "process_and_upload"]:
         parser.add_argument(
             "import_path",
-            help="Path to your images",
-        )
-        parser.add_argument(
-            "zip_dir",
-            help="Path to store zipped images",
-        )
-    else:
-        parser.add_argument(
-            "import_path",
-            help="Path to your images",
+            help="Path to your images.",
+            nargs="+",
+            type=Path,
         )
         parser.add_argument(
             "--skip_subfolders",
-            help="Skip all subfolders and import only the images in the given import_path",
+            help="Skip all subfolders and import only the images in the given IMPORT_PATH.",
             action="store_true",
             default=False,
             required=False,
@@ -87,7 +90,39 @@ def configure_logger(logger: logging.Logger, stream=None) -> None:
     logger.addHandler(handler)
 
 
+def _log_params(argvars: T.Dict) -> None:
+    MAX_ENTRIES = 5
+
+    def _stringify(x) -> str:
+        if isinstance(x, enum.Enum):
+            return x.value
+        else:
+            return str(x)
+
+    for k, v in argvars.items():
+        if v is None:
+            continue
+        if callable(v):
+            continue
+        if k in ["jwt", "user_password"]:
+            assert isinstance(v, str), type(v)
+            v = "******"
+        if isinstance(v, (list, set, tuple)):
+            entries = [_stringify(x) for x in v]
+            if len(entries) <= MAX_ENTRIES:
+                v = ", ".join(entries)
+            else:
+                v = (
+                    ", ".join(entries[:MAX_ENTRIES])
+                ) + f" and {len(entries) - MAX_ENTRIES} more"
+        else:
+            v = _stringify(v)
+        LOG.debug("CLI param: %s: %s", k, v)
+
+
 def main():
+    version_text = f"mapillary_tools version {VERSION}"
+
     parser = argparse.ArgumentParser(
         "mapillary_tool",
     )
@@ -95,7 +130,7 @@ def main():
         "--version",
         help="show the version of mapillary tools and exit",
         action="version",
-        version=f"mapillary_tools version {VERSION}",
+        version=version_text,
     )
     parser.add_argument(
         "--verbose",
@@ -125,15 +160,14 @@ def main():
     configure_logger(LOG, sys.stderr)
     LOG.setLevel(log_level)
 
+    LOG.debug("%s", version_text)
     argvars = vars(args)
-    params = {k: v for k, v in argvars.items() if v is not None and not callable(v)}
-    for k, v in params.items():
-        LOG.debug(f"CLI param: {k}: {v}")
+    _log_params(argvars)
 
     try:
         args.func(argvars)
     except exceptions.MapillaryUserError as exc:
-        LOG.error(f"{exc.__class__.__name__}: {exc}")
+        LOG.error("%s: %s", exc.__class__.__name__, exc)
         sys.exit(exc.exit_code)
 
 

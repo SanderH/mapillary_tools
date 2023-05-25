@@ -6,7 +6,8 @@ OS=linux
 # build
 mkdir -p dist
 rm -rf dist/${OS}
-pyinstaller --noconfirm --distpath dist/${OS} --onefile --windowed mapillary_tools.spec mapillary_tools
+pyinstaller --version
+pyinstaller --noconfirm --distpath dist/${OS} mapillary_tools.spec
 
 # check
 SOURCE=dist/${OS}/mapillary_tools
@@ -23,7 +24,7 @@ cp "$SOURCE" "$TARGET"
 TARGET_BASENAME=$(basename "$TARGET")
 # to produce "HASH mapillary_toos" instead of "HASH dist/releases/mapillary_tools"
 cd dist/releases
-shasum -a256 "$TARGET_BASENAME" | tee "${TARGET_BASENAME}.sha256"
+shasum -a256 "$TARGET_BASENAME" | tee "${TARGET_BASENAME}.sha256.txt"
 cd ../../
 
 # summary

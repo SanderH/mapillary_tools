@@ -1,66 +1,40 @@
+import itertools
+import logging
+import math
 import os
 import typing as T
-import datetime
-import uuid
-import itertools
 
-from . import types
-from .geo import compute_bearing, gps_distance, diff_bearing, pairwise
-from .exceptions import MapillaryDuplicationError
+from . import constants, geo, types
+from .exceptions import MapillaryBadParameterError, MapillaryDuplicationError
 
-MAX_SEQUENCE_LENGTH = 500
+LOG = logging.getLogger(__name__)
 
 
-class _GPXPoint:
-    desc: types.ImageDescriptionFile
-
-    def __init__(self, desc: types.ImageDescriptionFile):
-        self.desc = desc
-
-    @property
-    def filename(self) -> str:
-        return self.desc["filename"]
-
-    @property
-    def lat(self) -> float:
-        return self.desc["MAPLatitude"]
-
-    @property
-    def lon(self) -> float:
-        return self.desc["MAPLongitude"]
-
-    @property
-    def time(self) -> datetime.datetime:
-        return types.map_capture_time_to_datetime(self.desc["MAPCaptureTime"])
-
-    @property
-    def angle(self) -> T.Optional[float]:
-        return self.desc.get("MAPCompassHeading", {}).get("TrueHeading")
+Point = T.TypeVar("Point", bound=geo.Point)
+PointSequence = T.List[Point]
 
 
-GPXSequence = T.List[_GPXPoint]
-
-
-def cut_sequences(
-    sequence: GPXSequence,
+def cut_sequence_by_time_distance(
+    sequence: PointSequence,
     cutoff_distance: float,
     cutoff_time: float,
-) -> T.List[GPXSequence]:
-    sequences: T.List[T.List[_GPXPoint]] = []
+) -> T.List[PointSequence]:
+    sequences: T.List[PointSequence] = []
 
     if sequence:
         sequences.append([sequence[0]])
 
-    for prev, cur in pairwise(sequence):
+    for prev, cur in geo.pairwise(sequence):
         # invariant: prev is processed
-        distance = gps_distance(
+        distance = geo.gps_distance(
             (prev.lat, prev.lon),
             (cur.lat, cur.lon),
         )
         if cutoff_distance <= distance:
             sequences.append([cur])
             continue
-        time_diff = (cur.time - prev.time).total_seconds()
+        time_diff = cur.time - prev.time
+        assert 0 <= time_diff, "sequence must be sorted by capture times"
         if cutoff_time <= time_diff:
             sequences.append([cur])
             continue
@@ -70,183 +44,300 @@ def cut_sequences(
     return sequences
 
 
-def find_duplicates(
-    sequence: GPXSequence,
+def duplication_check(
+    sequence: PointSequence,
     duplicate_distance: float,
     duplicate_angle: float,
-) -> T.List[int]:
-    if not sequence:
-        return []
+) -> T.Tuple[PointSequence, T.List[types.ErrorMetadata]]:
+    dedups: PointSequence = []
+    dups: T.List[types.ErrorMetadata] = []
 
-    duplicates = []
     sequence_iter = iter(sequence)
     prev = next(sequence_iter)
-    for idx, cur in enumerate(sequence_iter):
-        distance = gps_distance(
+    if prev is None:
+        return dedups, dups
+    dedups.append(prev)
+
+    for cur in sequence_iter:
+        # invariant: prev is processed
+        distance = geo.gps_distance(
             (prev.lat, prev.lon),
             (cur.lat, cur.lon),
         )
-        distance_duplicated = distance <= duplicate_distance
 
         if prev.angle is not None and cur.angle is not None:
-            bearing_delta = diff_bearing(prev.angle, cur.angle)
-            angle_duplicated = bearing_delta <= duplicate_angle
+            angle_diff = geo.diff_bearing(prev.angle, cur.angle)
         else:
-            angle_duplicated = False
+            angle_diff = None
 
-        if distance_duplicated and angle_duplicated:
-            duplicates.append(idx + 1)
+        if distance <= duplicate_distance and (
+            angle_diff is not None and angle_diff <= duplicate_angle
+        ):
+            dups.append(
+                types.describe_error_metadata(
+                    MapillaryDuplicationError(
+                        f"Duplicate of its previous image in terms of distance <= {duplicate_distance} and angle <= {duplicate_angle}",
+                        types.as_desc(cur),
+                        distance=distance,
+                        angle_diff=angle_diff,
+                    ),
+                    cur.filename,
+                    filetype=types.FileType.IMAGE,
+                ),
+            )
+            # prev does not change
+        else:
+            dedups.append(cur)
+            prev = cur
+        # invariant: cur is processed
+
+    return dedups, dups
+
+
+def cut_sequence(
+    sequence: T.List[types.ImageMetadata],
+    max_images: int,
+    max_sequence_filesize: int,
+    max_sequence_pixels: int,
+) -> T.List[T.List[types.ImageMetadata]]:
+    """
+    Cut a sequence into multiple sequences by max_images or max filesize
+    """
+    sequences: T.List[T.List[types.ImageMetadata]] = []
+    last_sequence_file_size = 0
+    last_sequence_pixels = 0
+
+    for image in sequence:
+        # decent default values if width/height not available
+        width = 1024 if image.width is None else image.width
+        height = 1024 if image.height is None else image.height
+
+        filesize = os.path.getsize(image.filename)
+
+        if len(sequences) == 0:
+            start_new_sequence = True
+        else:
+            if sequences[-1]:
+                if max_images < len(sequences[-1]):
+                    LOG.debug(
+                        "Cut the sequence because the current sequence (%s) reaches the max number of images (%s)",
+                        len(sequences[-1]),
+                        max_images,
+                    )
+                    start_new_sequence = True
+                elif max_sequence_filesize < last_sequence_file_size + filesize:
+                    LOG.debug(
+                        "Cut the sequence because the current sequence (%s) reaches the max filesize (%s)",
+                        last_sequence_file_size + filesize,
+                        max_sequence_filesize,
+                    )
+                    start_new_sequence = True
+                elif max_sequence_pixels < last_sequence_pixels + width * height:
+                    LOG.debug(
+                        "Cut the sequence because the current sequence (%s) reaches the max pixels (%s)",
+                        last_sequence_pixels + width * height,
+                        max_sequence_pixels,
+                    )
+                    start_new_sequence = True
+                else:
+                    start_new_sequence = False
+            else:
+                start_new_sequence = False
+
+        if start_new_sequence:
+            sequences.append([])
+            last_sequence_file_size = 0
+            last_sequence_pixels = 0
+
+        sequences[-1].append(image)
+        last_sequence_file_size += filesize
+        last_sequence_pixels += width * height
+
+    assert sum(len(s) for s in sequences) == len(sequence)
+
+    return sequences
+
+
+def _group_sort_images_by_folder(
+    image_metadatas: T.List[types.ImageMetadata],
+) -> T.List[T.List[types.ImageMetadata]]:
+    # group images by parent directory
+    sequences_by_parent: T.Dict[str, T.List[types.ImageMetadata]] = {}
+    for image_metadata in image_metadatas:
+        filename = image_metadata.filename.resolve()
+        sequences_by_parent.setdefault(str(filename.parent), []).append(image_metadata)
+
+    sequences = list(sequences_by_parent.values())
+    for sequence in sequences:
+        sequence.sort(
+            key=lambda metadata: metadata.sort_key(),
+        )
+
+    return sequences
+
+
+def _interpolate_subsecs_for_sorting(sequence: PointSequence) -> None:
+    """
+    Update the timestamps make sure they are unique and sorted
+    in the same order by interpolating subseconds
+    Examples:
+    - Input: 1, 1, 1, 1, 1, 2
+    - Output: 1, 1.2, 1.4, 1.6, 1.8, 2
+    """
+
+    gidx = 0
+    for _, g in itertools.groupby(sequence, key=lambda point: int(point.time * 1e3)):
+        # invariant gidx is the idx of g[0] in sequence
+        group = list(g)
+        if len(group) <= 1:
+            gidx += len(group)
             continue
 
-        prev = cur
+        t = sequence[gidx].time
+        nt = min(
+            sequence[gidx + len(group)].time
+            if gidx + len(group) < len(sequence)
+            else math.floor(t + 1.0),
+            math.floor(t + 1.0),
+        )
+        assert t <= nt, f"expect sorted but got {t} > {nt}"
+        interval = (nt - t) / len(group)
+        for idx, point in enumerate(group):
+            point.time = group[0].time + idx * interval
+        gidx = gidx + len(group)
 
-    return duplicates
-
-
-def group_descs_by_folder(
-    descs: T.List[types.ImageDescriptionFile],
-) -> T.List[T.List[types.ImageDescriptionFile]]:
-    descs.sort(key=lambda desc: os.path.dirname(desc["filename"]))
-    group = itertools.groupby(descs, key=lambda desc: os.path.dirname(desc["filename"]))
-    sequences = []
-    for _, sequence in group:
-        sequences.append(list(sequence))
-    return sequences
-
-
-def duplication_check(
-    sequence: GPXSequence,
-    duplicate_distance: float,
-    duplicate_angle: float,
-) -> T.Tuple[GPXSequence, T.List[types.ImageDescriptionFileError]]:
-    dup_indices = find_duplicates(
-        sequence,
-        duplicate_distance=duplicate_distance,
-        duplicate_angle=duplicate_angle,
-    )
-    dup_set = set(dup_indices)
-    dups = [image for idx, image in enumerate(sequence) if idx in dup_set]
-    failures: T.List[types.ImageDescriptionFileError] = []
-    for image in dups:
-        error: types.ImageDescriptionFileError = {
-            "error": types.describe_error(
-                MapillaryDuplicationError("duplicated", image.desc)
-            ),
-            "filename": image.filename,
-        }
-
-        failures.append(error)
-
-    dedups = [image for idx, image in enumerate(sequence) if idx not in dup_set]
-    return dedups, failures
+    for cur, nxt in geo.pairwise(sequence):
+        assert (
+            cur.time <= nxt.time
+        ), f"sequence must be sorted but got {cur.time} > {nxt.time}"
 
 
-def interpolate(sequence: GPXSequence, interpolate_directions: bool) -> GPXSequence:
-    interpolated: GPXSequence = []
-    for cur, nex in pairwise(sequence):
-        # should interpolate or not
-        if interpolate_directions or cur.angle is None:
-            new_bearing = compute_bearing(cur.lat, cur.lon, nex.lat, nex.lon)
-            new_desc = T.cast(
-                types.ImageDescriptionFile,
-                {
-                    **cur.desc,
-                    "MAPCompassHeading": {
-                        "TrueHeading": new_bearing,
-                        "MagneticHeading": new_bearing,
-                    },
-                },
-            )
-            interpolated.append(_GPXPoint(new_desc))
-        else:
-            interpolated.append(cur)
+def _parse_filesize_in_bytes(filesize_str: str) -> int:
+    filesize_str = filesize_str.strip().upper()
 
-    if interpolated:
-        assert len(interpolated) == len(sequence) - 1
+    if filesize_str.endswith("B"):
+        return int(filesize_str[:-1])
+    elif filesize_str.endswith("K"):
+        return int(filesize_str[:-1]) * 1024
+    elif filesize_str.endswith("M"):
+        return int(filesize_str[:-1]) * 1024 * 1024
+    elif filesize_str.endswith("G"):
+        return int(filesize_str[:-1]) * 1024 * 1024 * 1024
     else:
-        assert len(sequence) <= 1
+        return int(filesize_str)
 
-    # interpolate the last image's angle
-    # can interpolate or not
-    if 2 <= len(sequence) and interpolated[-1] is not None:
-        # should interpolate or not
-        if interpolate_directions or sequence[-1] is None:
-            new_desc = T.cast(
-                types.ImageDescriptionFile,
-                {
-                    **sequence[-1].desc,
-                    "MAPCompassHeading": {
-                        "TrueHeading": interpolated[-1].angle,
-                        "MagneticHeading": interpolated[-1].angle,
-                    },
-                },
-            )
-            interpolated.append(_GPXPoint(new_desc))
-        else:
-            interpolated.append(sequence[-1])
+
+def _parse_pixels(pixels_str: str) -> int:
+    pixels_str = pixels_str.strip().upper()
+
+    if pixels_str.endswith("K"):
+        return int(pixels_str[:-1]) * 1000
+    elif pixels_str.endswith("M"):
+        return int(pixels_str[:-1]) * 1000 * 1000
+    elif pixels_str.endswith("G"):
+        return int(pixels_str[:-1]) * 1000 * 1000 * 1000
     else:
-        interpolated.append(sequence[-1])
-
-    assert len(interpolated) == len(sequence)
-
-    return interpolated
-
-
-def cap_sequence(sequence: GPXSequence) -> T.List[GPXSequence]:
-    sequences: T.List[GPXSequence] = []
-    for idx in range(0, len(sequence), MAX_SEQUENCE_LENGTH):
-        sequences.append([])
-        for image in sequence[idx : idx + MAX_SEQUENCE_LENGTH]:
-            sequences[-1].append(image)
-    return sequences
+        return int(pixels_str)
 
 
 def process_sequence_properties(
-    descs: T.List[types.ImageDescriptionFileOrError],
-    cutoff_distance=600.0,
-    cutoff_time=60.0,
+    metadatas: T.Sequence[types.MetadataOrError],
+    cutoff_distance=constants.CUTOFF_DISTANCE,
+    cutoff_time=constants.CUTOFF_TIME,
     interpolate_directions=False,
-    duplicate_distance=0.1,
-    duplicate_angle=5,
-) -> T.List[types.ImageDescriptionFileOrError]:
-    groups = group_descs_by_folder(types.filter_out_errors(descs))
-
-    sequences = []
-    for group in groups:
-        sequences.extend(
-            cut_sequences(
-                [_GPXPoint(desc) for desc in group], cutoff_distance, cutoff_time
-            )
+    duplicate_distance=constants.DUPLICATE_DISTANCE,
+    duplicate_angle=constants.DUPLICATE_ANGLE,
+) -> T.List[types.MetadataOrError]:
+    try:
+        max_sequence_filesize_in_bytes = _parse_filesize_in_bytes(
+            constants.MAX_SEQUENCE_FILESIZE
+        )
+    except ValueError:
+        raise MapillaryBadParameterError(
+            f"Expect the envvar {constants._ENV_PREFIX}MAX_SEQUENCE_FILESIZE to be a valid filesize that ends with B, K, M, or G, but got {constants.MAX_SEQUENCE_FILESIZE}"
         )
 
-    processed = [desc for desc in descs if types.is_error(desc)]
+    try:
+        max_sequence_pixels = _parse_pixels(constants.MAX_SEQUENCE_PIXELS)
+    except ValueError:
+        raise MapillaryBadParameterError(
+            f"Expect the envvar {constants._ENV_PREFIX}MAX_SEQUENCE_PIXELS to be a valid number of pixels that ends with K, M, or G, but got {constants.MAX_SEQUENCE_PIXELS}"
+        )
 
-    for sequence in sequences:
+    error_metadatas: T.List[types.ErrorMetadata] = []
+    image_metadatas: T.List[types.ImageMetadata] = []
+    video_metadatas: T.List[types.VideoMetadata] = []
+
+    for metadata in metadatas:
+        if isinstance(metadata, types.ErrorMetadata):
+            error_metadatas.append(metadata)
+        elif isinstance(metadata, types.ImageMetadata):
+            image_metadatas.append(metadata)
+        elif isinstance(metadata, types.VideoMetadata):
+            video_metadatas.append(metadata)
+        else:
+            raise RuntimeError(f"invalid metadata type: {metadata}")
+
+    sequences_by_folder = _group_sort_images_by_folder(image_metadatas)
+    # make sure they are sorted
+    for sequence in sequences_by_folder:
+        for cur, nxt in geo.pairwise(sequence):
+            assert cur.time <= nxt.time, "sequence must be sorted"
+
+    # cut sequences
+    sequences_after_cut: T.List[PointSequence] = []
+    for sequence in sequences_by_folder:
+        cut = cut_sequence_by_time_distance(sequence, cutoff_distance, cutoff_time)
+        sequences_after_cut.extend(cut)
+    assert len(image_metadatas) == sum(len(s) for s in sequences_after_cut)
+
+    # reuse imaeg_metadatas to store processed image metadatas
+    image_metadatas = []
+
+    sequence_idx = 0
+
+    for sequence in sequences_after_cut:
         # duplication check
-        passed, failed = duplication_check(
+        dedups, dups = duplication_check(
             sequence,
             duplicate_distance=duplicate_distance,
             duplicate_angle=duplicate_angle,
         )
-        for desc in failed:
-            processed.append(desc)
+        assert len(sequence) == len(dedups) + len(dups)
+        error_metadatas.extend(dups)
 
         # interpolate angles
-        interpolated = interpolate(passed, interpolate_directions)
+        if interpolate_directions:
+            for p in dedups:
+                p.angle = None
+        geo.interpolate_directions_if_none(dedups)
 
         # cut sequence per MAX_SEQUENCE_LENGTH images
-        capped = cap_sequence(interpolated)
+        cut = cut_sequence(
+            dedups,
+            constants.MAX_SEQUENCE_LENGTH,
+            max_sequence_filesize_in_bytes,
+            max_sequence_pixels,
+        )
 
-        for s in capped:
-            sequence_uuid = str(uuid.uuid4())
-            for p in s:
-                processed.append(
-                    T.cast(
-                        types.ImageDescriptionFile,
-                        {**p.desc, "MAPSequenceUUID": sequence_uuid},
-                    )
-                )
+        for c in cut:
+            _interpolate_subsecs_for_sorting(c)
 
-    assert len(descs) == len(processed)
+        # assign sequence UUIDs
+        for c in cut:
+            for p in c:
+                # using incremental id as shorter "uuid", so we can save some space for the desc file
+                p.MAPSequenceUUID = str(sequence_idx)
+                image_metadatas.append(p)
+            sequence_idx += 1
 
-    return processed
+    results = error_metadatas + image_metadatas + video_metadatas
+
+    assert len(metadatas) == len(
+        results
+    ), f"expected {len(metadatas)} results but got {len(results)}"
+    assert sequence_idx == len(
+        set(metadata.MAPSequenceUUID for metadata in image_metadatas)
+    )
+
+    return results

@@ -1,6 +1,7 @@
 import argparse
 import io
 import os
+
 import piexif
 
 
@@ -30,5 +31,5 @@ if __name__ == "__main__":
     output_bytes = io.BytesIO()
     piexif.transplant(input_string, image_string, output_bytes)
 
-    with open(args.output_image, "w") as fout:
+    with open(args.output_image, "wb") as fout:
         fout.write(output_bytes.read())

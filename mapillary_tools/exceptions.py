@@ -67,6 +67,36 @@ class MapillaryInvalidBlackVueVideoError(
 
 
 class MapillaryDuplicationError(_MapillaryDescriptionError):
-    def __init__(self, message: str, desc: T.Mapping) -> None:
+    def __init__(
+        self,
+        message: str,
+        desc: T.Mapping,
+        distance: float,
+        angle_diff: T.Optional[float],
+    ) -> None:
         super().__init__(message)
         self.desc = desc
+        self.distance = distance
+        self.angle_diff = angle_diff
+
+
+class MapillaryUploadedAlreadyError(_MapillaryDescriptionError):
+    def __init__(
+        self,
+        message: str,
+        desc: T.Mapping,
+    ) -> None:
+        super().__init__(message)
+        self.desc = desc
+
+
+class MapillaryUploadConnectionError(MapillaryUserError):
+    exit_code = 12
+
+
+class MapillaryUploadTimeoutError(MapillaryUserError):
+    exit_code = 13
+
+
+class MapillaryUploadUnauthorizedError(MapillaryUserError):
+    exit_code = 14

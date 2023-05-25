@@ -1,6 +1,52 @@
 # Changelog
 
+Check the release page for changelogs: https://github.com/mapillary/mapillary_tools/releases
+
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
+
+## [0.9.0](https://github.com/mapillary/mapillary_tools/compare/v0.8.2...v0.9.0) (2022-07-23)
+
+
+### Features
+
+* Enable upload history and duplication check ([#497](https://github.com/mapillary/mapillary_tools/issues/497)) ([ee40cfa](https://github.com/mapillary/mapillary_tools/commit/ee40cfa96e5deb5577e5bbc82eb9baa584bf8932))
+* [experimental] Add CAMM camera support https://github.com/mapillary/mapillary_tools/pull/515
+
+### Improvement
+
+* Clarify a few command line options in the help page (--help) https://github.com/mapillary/mapillary_tools/pull/509
+* Remove pymp4 https://github.com/mapillary/mapillary_tools/pull/506
+
+### Bug Fixes
+
+* subprocess processing temporary file in Windows ([#510](https://github.com/mapillary/mapillary_tools/issues/510)) ([2902606](https://github.com/mapillary/mapillary_tools/commit/2902606ec8bbf3309761dd9dd9efaaf55a2d423b))
+* upload blackvue in subfolders ([#501](https://github.com/mapillary/mapillary_tools/issues/501)) ([4bfebf8](https://github.com/mapillary/mapillary_tools/commit/4bfebf8705d06d8568619cc0c6b83fd3d4fad95e))
+
+### [0.8.2](https://github.com/mapillary/mapillary_tools/compare/v0.8.1...v0.8.2) (2022-02-11)
+
+
+### Features
+
+* add commands for uploading blackvue/zip directories ([#499](https://github.com/mapillary/mapillary_tools/issues/499)) ([356263d](https://github.com/mapillary/mapillary_tools/commit/356263d49450b5f2636e45ef4471aaef06ee7c6a))
+
+
+### Bug Fixes
+
+* set timeout for requests ([#495](https://github.com/mapillary/mapillary_tools/issues/495)) ([f51fd0f](https://github.com/mapillary/mapillary_tools/commit/f51fd0f689b90c5e31264d68bb1f5c6388a05ae1))
+* wrong module path in setup.py ([#493](https://github.com/mapillary/mapillary_tools/issues/493)) ([8db1667](https://github.com/mapillary/mapillary_tools/commit/8db16670b1520b2b40d841a500524f764414f932))
+
+### [0.8.2](https://github.com/mapillary/mapillary_tools/compare/v0.8.1...v0.8.2) (2022-02-11)
+
+
+### Features
+
+* add commands for uploading blackvue/zip directories ([#499](https://github.com/mapillary/mapillary_tools/issues/499)) ([356263d](https://github.com/mapillary/mapillary_tools/commit/356263d49450b5f2636e45ef4471aaef06ee7c6a))
+
+
+### Bug Fixes
+
+* set timeout for requests ([#495](https://github.com/mapillary/mapillary_tools/issues/495)) ([f51fd0f](https://github.com/mapillary/mapillary_tools/commit/f51fd0f689b90c5e31264d68bb1f5c6388a05ae1))
+* wrong module path in setup.py ([#493](https://github.com/mapillary/mapillary_tools/issues/493)) ([8db1667](https://github.com/mapillary/mapillary_tools/commit/8db16670b1520b2b40d841a500524f764414f932))
 
 ## [0.8.1](https://github.com/mapillary/mapillary_tools/compare/v0.8.0...v0.8.1) (2021-12-30)
 
