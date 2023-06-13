@@ -1,9 +1,26 @@
+import abc
 import datetime
+import logging
 import typing as T
+import xml.etree.ElementTree as et
 from pathlib import Path
 
 import exifread
 from exifread.utils import Ratio
+
+
+XMP_NAMESPACES = {
+    "exif": "http://ns.adobe.com/exif/1.0/",
+    "tiff": "http://ns.adobe.com/tiff/1.0/",
+    "exifEX": "http://cipa.jp/exif/1.0/",
+    "xmp": "http://ns.adobe.com/xap/1.0/",
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "x": "adobe:ns:meta/",
+    "GPano": "http://ns.google.com/photos/1.0/panorama/",
+}
+# https://github.com/ianare/exif-py/issues/167
+EXIFREAD_LOG = logging.getLogger("exifread")
+EXIFREAD_LOG.setLevel(logging.ERROR)
 
 
 def eval_frac(value: Ratio) -> float:
@@ -30,20 +47,35 @@ def gps_to_decimal(values: T.Tuple[Ratio, Ratio, Ratio]) -> T.Optional[float]:
     return degrees + minutes / 60 + seconds / 3600
 
 
+def _parse_iso(dtstr: str) -> T.Optional[datetime.datetime]:
+    try:
+        return datetime.datetime.fromisoformat(dtstr)
+    except ValueError:
+        # fromisoformat does not support trailing Z
+        return strptime_alternative_formats(
+            dtstr, ["%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"]
+        )
+
+
 def strptime_alternative_formats(
     dtstr: str, formats: T.Sequence[str]
 ) -> T.Optional[datetime.datetime]:
     for format in formats:
-        try:
-            return datetime.datetime.strptime(dtstr, format)
-        except ValueError:
-            continue
+        if format == "ISO":
+            dt = _parse_iso(dtstr)
+            if dt is not None:
+                return dt
+        else:
+            try:
+                return datetime.datetime.strptime(dtstr, format)
+            except ValueError:
+                pass
     return None
 
 
-def parse_timestr(timestr: str) -> T.Optional[datetime.timedelta]:
+def parse_timestr_as_timedelta(timestr: str) -> T.Optional[datetime.timedelta]:
+    timestr = timestr.strip()
     parts = timestr.strip().split(":")
-
     try:
         if len(parts) == 0:
             raise ValueError
@@ -59,8 +91,155 @@ def parse_timestr(timestr: str) -> T.Optional[datetime.timedelta]:
     return datetime.timedelta(hours=h, minutes=m, seconds=s)
 
 
+def parse_time_ratios_as_timedelta(
+    time_tuple: T.Sequence[Ratio],
+) -> T.Optional[datetime.timedelta]:
+    try:
+        hours, minutes, seconds, *_ = time_tuple
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(hours, Ratio):
+        return None
+    if not isinstance(minutes, Ratio):
+        return None
+    if not isinstance(seconds, Ratio):
+        return None
+    try:
+        h: int = int(eval_frac(hours))
+        m: int = int(eval_frac(minutes))
+        s: float = eval_frac(seconds)
+    except (ValueError, ZeroDivisionError):
+        return None
+    return datetime.timedelta(hours=h, minutes=m, seconds=s)
+
+
+def parse_gps_datetime(
+    dtstr: str,
+    default_tz: T.Optional[datetime.timezone] = datetime.timezone.utc,
+) -> T.Optional[datetime.datetime]:
+    dtstr = dtstr.strip()
+
+    dt = strptime_alternative_formats(dtstr, ["ISO"])
+    if dt is not None:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=default_tz)
+        return dt
+
+    date_and_time = dtstr.split(maxsplit=2)
+    if len(date_and_time) < 2:
+        return None
+    datestr, timestr, *_ = date_and_time
+    return parse_gps_datetime_separately(datestr, timestr, default_tz=default_tz)
+
+
+def parse_gps_datetime_separately(
+    datestr: str,
+    timestr: str,
+    default_tz: T.Optional[datetime.timezone] = datetime.timezone.utc,
+) -> T.Optional[datetime.datetime]:
+    """
+    Parse GPSDateStamp and GPSTimeStamp and return the corresponding datetime object in GMT.
+
+    Valid examples:
+    - "2021:08:02" "07:57:06"
+    - "2022:06:10" "17:35:52.269367"
+    - "2022:06:10" "17:35:52.269367Z"
+    """
+    datestr = datestr.strip()
+    dt = strptime_alternative_formats(datestr, ["%Y:%m:%d", "%Y-%m-%d"])
+    if dt is None:
+        return None
+
+    # split the time part and timezone part
+    # examples: 12:22:00.123000+01:00
+    #           12:22:00.123000Z
+    #           12:22:00
+    timestr = timestr.strip()
+    if timestr.endswith("Z"):
+        timepartstr = timestr[:-1]
+        tzinfo = datetime.timezone.utc
+    else:
+        # find the first + or -
+        idx = timestr.find("+")
+        if idx < 0:
+            idx = timestr.find("-")
+        # if found, then parse the offset
+        if 0 <= idx:
+            timepartstr = timestr[:idx]
+            offset_delta = parse_timestr_as_timedelta(timestr[idx + 1 :])
+            if offset_delta is not None:
+                if timestr[idx] == "-":
+                    offset_delta = -offset_delta
+                tzinfo = datetime.timezone(offset_delta)
+            else:
+                tzinfo = None
+        else:
+            timepartstr = timestr
+            tzinfo = None
+
+    delta = parse_timestr_as_timedelta(timepartstr)
+    if delta is None:
+        return None
+    dt = dt + delta
+
+    if tzinfo is None:
+        tzinfo = default_tz
+
+    dt = dt.replace(tzinfo=tzinfo)
+
+    return dt
+
+
+def parse_datetimestr_with_subsec_and_offset(
+    dtstr: str, subsec: T.Optional[str] = None, tz_offset: T.Optional[str] = None
+) -> T.Optional[datetime.datetime]:
+    """
+    Convert dtstr "YYYY:mm:dd HH:MM:SS[.sss]" to a datetime object.
+    It handles time "24:00:00" as "00:00:00" of the next day.
+    Subsec "123" will be parsed as seconds 0.123 i.e microseconds 123000 and added to the datetime object.
+    """
+    # handle dtstr
+    dtstr = dtstr.strip()
+
+    # example dtstr: <exif:DateTimeOriginal>2021-07-15T15:37:30+10:00</exif:DateTimeOriginal>
+    # example dtstr: 'EXIF DateTimeOriginal': (0x9003) ASCII=2021:07:15 15:37:30 @ 1278
+    dt = parse_gps_datetime(dtstr, default_tz=None)
+    if dt is None:
+        return None
+
+    # handle subsec
+    if subsec is not None:
+        subsec = subsec.strip()
+        if len(subsec) < 6:
+            subsec = subsec + ("0" * 6)
+        microseconds = int(subsec[:6])
+        # ValueError: microsecond must be in 0..999999
+        microseconds = microseconds % int(1e6)
+        # always overrides the microseconds
+        dt = dt.replace(microsecond=microseconds)
+
+    # handle tz_offset
+    if tz_offset is not None:
+        tz_offset = tz_offset.strip()
+        if tz_offset.startswith("+"):
+            offset_delta = parse_timestr_as_timedelta(tz_offset[1:])
+        elif tz_offset.startswith("-"):
+            offset_delta = parse_timestr_as_timedelta(tz_offset[1:])
+            if offset_delta is not None:
+                offset_delta = -1 * offset_delta
+        else:
+            offset_delta = parse_timestr_as_timedelta(tz_offset)
+        if offset_delta is not None:
+            offset_delta = make_valid_timezone_offset(offset_delta)
+            tzinfo = datetime.timezone(offset_delta)
+            dt = dt.replace(tzinfo=tzinfo)
+
+    return dt
+
+
 def make_valid_timezone_offset(delta: datetime.timedelta) -> datetime.timedelta:
-    # otherwise: ValueError: offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), not datetime.timedelta(days=1)
+    # otherwise: ValueError: offset must be a timedelta strictly between -timedelta(hours=24)
+    # and timedelta(hours=24), not datetime.timedelta(days=1)
     h24 = datetime.timedelta(hours=24)
     if h24 <= delta:
         delta = delta % h24
@@ -72,69 +251,250 @@ def make_valid_timezone_offset(delta: datetime.timedelta) -> datetime.timedelta:
 _FIELD_TYPE = T.TypeVar("_FIELD_TYPE", int, float, str)
 
 
-def parse_datetimestr(
-    dtstr: str, subsec: T.Optional[str] = None, tz_offset: T.Optional[str] = None
-) -> T.Optional[datetime.datetime]:
-    """
-    Convert dtstr "YYYY:mm:dd HH:MM:SS[.sss]" to a datetime object.
-    It handles time "24:00:00" as "00:00:00" of the next day.
-    subsec "123" will be parsed as seconds 0.123 i.e microseconds 123000 and added to the datetime object.
-    """
-    dtstr = dtstr.strip()
-    date_and_time = dtstr.split(maxsplit=2)
-    if len(date_and_time) < 2:
-        return None
-    date, time = date_and_time[:2]
-    d = strptime_alternative_formats(date, ["%Y:%m:%d", "%Y-%m-%d"])
-    if d is None:
-        return None
-    time_delta = parse_timestr(time)
-    if time_delta is None:
-        # unable to parse HH:MM:SS
-        return None
-    d = d + time_delta
-    if subsec is not None:
-        if len(subsec) < 6:
-            subsec = subsec + ("0" * 6)
-        microseconds = int(subsec[:6])
-        # ValueError: microsecond must be in 0..999999
-        microseconds = microseconds % int(1e6)
-        # always overrides the microseconds
-        d = d.replace(microsecond=microseconds)
-    if tz_offset is not None:
-        if tz_offset.startswith("+"):
-            offset_delta = parse_timestr(tz_offset[1:])
-        elif tz_offset.startswith("-"):
-            offset_delta = parse_timestr(tz_offset[1:])
-            if offset_delta is not None:
-                offset_delta = -1 * offset_delta
-        else:
-            offset_delta = parse_timestr(tz_offset)
-        if offset_delta is not None:
-            offset_delta = make_valid_timezone_offset(offset_delta)
-            tzinfo = datetime.timezone(offset_delta)
-            d = d.replace(tzinfo=tzinfo)
-    return d
+class ExifReadABC(abc.ABC):
+    @abc.abstractmethod
+    def extract_altitude(self) -> T.Optional[float]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def extract_capture_time(self) -> T.Optional[datetime.datetime]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def extract_direction(self) -> T.Optional[float]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def extract_lon_lat(self) -> T.Optional[T.Tuple[float, float]]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def extract_make(self) -> T.Optional[str]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def extract_model(self) -> T.Optional[str]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def extract_width(self) -> T.Optional[int]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def extract_height(self) -> T.Optional[int]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def extract_orientation(self) -> int:
+        raise NotImplementedError
 
 
-class ExifRead:
+class ExifReadFromXMP(ExifReadABC):
+    def __init__(self, etree: et.ElementTree):
+        self.etree = etree
+        self._tags_or_attrs: T.Dict[str, str] = {}
+        for description in self.etree.iterfind(
+            ".//rdf:Description", namespaces=XMP_NAMESPACES
+        ):
+            for k, v in description.items():
+                self._tags_or_attrs[k] = v
+            for child in description:
+                if child.text is not None:
+                    self._tags_or_attrs[child.tag] = child.text
+
+    def extract_altitude(self) -> T.Optional[float]:
+        return self._extract_alternative_fields(["exif:GPSAltitude"], float)
+
+    def _extract_exif_datetime(
+        self, dt_tag: str, subsec_tag: str, offset_tag: str
+    ) -> T.Optional[datetime.datetime]:
+        dtstr = self._extract_alternative_fields([dt_tag], str)
+        if dtstr is None:
+            return None
+        subsec = self._extract_alternative_fields([subsec_tag], str)
+        # See https://github.com/mapillary/mapillary_tools/issues/388#issuecomment-860198046
+        # and https://community.gopro.com/t5/Cameras/subsecond-timestamp-bug/m-p/1057505
+        if subsec:
+            subsec = subsec.replace(" ", "0")
+        offset = self._extract_alternative_fields([offset_tag], str)
+        dt = parse_datetimestr_with_subsec_and_offset(dtstr, subsec, offset)
+        if dt is None:
+            return None
+        return dt
+
+    def extract_exif_datetime(self) -> T.Optional[datetime.datetime]:
+        dt = self._extract_exif_datetime(
+            "exif:DateTimeOriginal",
+            "exif:SubsecTimeOriginal",
+            "exif:OffsetTimeOriginal",
+        )
+        if dt is not None:
+            return dt
+
+        dt = self._extract_exif_datetime(
+            "exif:DateTimeDigitized",
+            "exif:SubsecTimeDigitized",
+            "exif:OffsetTimeDigitized",
+        )
+        if dt is not None:
+            return dt
+
+        return None
+
+    def extract_gps_datetime(self) -> T.Optional[datetime.datetime]:
+        """
+        Extract timestamp from GPS field.
+        """
+        timestr = self._extract_alternative_fields(["exif:GPSTimeStamp"], str)
+        if not timestr:
+            return None
+
+        # handle: <exif:GPSTimeStamp>2021-07-15T05:37:30Z</exif:GPSTimeStamp>
+        dt = strptime_alternative_formats(timestr, ["ISO"])
+        if dt is not None:
+            return dt
+
+        datestr = self._extract_alternative_fields(["exif:GPSDateStamp"], str)
+        if datestr is None:
+            return None
+
+        # handle: exif:GPSTimeStamp="17:22:05.999000"
+        return parse_gps_datetime_separately(datestr, timestr)
+
+    def extract_capture_time(self) -> T.Optional[datetime.datetime]:
+        dt = self.extract_gps_datetime()
+        if dt is not None:
+            return dt
+
+        dt = self.extract_exif_datetime()
+        if dt is not None:
+            return dt
+
+        return None
+
+    def extract_direction(self) -> T.Optional[float]:
+        return self._extract_alternative_fields(
+            ["exif:GPSImgDirection", "exif:GPSTrack"], float
+        )
+
+    def extract_lon_lat(self) -> T.Optional[T.Tuple[float, float]]:
+        lat = self._extract_alternative_fields(["exif:GPSLatitude"], float)
+        if lat is None:
+            return None
+
+        lon = self._extract_alternative_fields(["exif:GPSLongitude"], float)
+        if lon is None:
+            return None
+
+        ref = self._extract_alternative_fields(["exif:GPSLongitudeRef"], str)
+        if ref and ref.upper() == "W":
+            lon = -1 * lon
+
+        ref = self._extract_alternative_fields(["exif:GPSLatitudeRef"], str)
+        if ref and ref.upper() == "S":
+            lat = -1 * lat
+
+        return lon, lat
+
+    def extract_make(self) -> T.Optional[str]:
+        make = self._extract_alternative_fields(["tiff:Make", "exifEX:LensMake"], str)
+        if make is None:
+            return None
+        return make.strip()
+
+    def extract_model(self) -> T.Optional[str]:
+        model = self._extract_alternative_fields(
+            ["tiff:Model", "exifEX:LensModel"], str
+        )
+        if model is None:
+            return None
+        return model.strip()
+
+    def extract_width(self) -> T.Optional[int]:
+        return self._extract_alternative_fields(
+            [
+                "exif:PixelXDimension",
+                "GPano:FullPanoWidthPixels",
+                "GPano:CroppedAreaImageWidthPixels",
+            ],
+            int,
+        )
+
+    def extract_height(self) -> T.Optional[int]:
+        return self._extract_alternative_fields(
+            [
+                "exif:PixelYDimension",
+                "GPano:FullPanoHeightPixels",
+                "GPano:CroppedAreaImageHeightPixels",
+            ],
+            int,
+        )
+
+    def extract_orientation(self) -> int:
+        orientation = self._extract_alternative_fields(["tiff:Orientation"], int)
+        if orientation is None or orientation not in range(1, 9):
+            return 1
+        return orientation
+
+    def _extract_alternative_fields(
+        self,
+        fields: T.Sequence[str],
+        field_type: T.Type[_FIELD_TYPE],
+    ) -> T.Optional[_FIELD_TYPE]:
+        """
+        Extract a value for a list of ordered fields.
+        Return the value of the first existed field in the list
+        """
+        for field in fields:
+            ns, attr_or_tag = field.split(":")
+            value = self._tags_or_attrs.get(
+                "{" + XMP_NAMESPACES[ns] + "}" + attr_or_tag
+            )
+            if value is None:
+                continue
+            if field_type is int:
+                try:
+                    return T.cast(_FIELD_TYPE, int(value))
+                except (ValueError, TypeError):
+                    pass
+            elif field_type is float:
+                try:
+                    return T.cast(_FIELD_TYPE, float(value))
+                except (ValueError, TypeError):
+                    pass
+            elif field_type is str:
+                try:
+                    return T.cast(_FIELD_TYPE, str(value))
+                except (ValueError, TypeError):
+                    pass
+            else:
+                raise ValueError(f"Invalid field type {field_type}")
+        return None
+
+
+class ExifReadFromEXIF(ExifReadABC):
     """
     EXIF class for reading exif from an image
     """
 
-    def __init__(
-        self, path_or_stream: T.Union[Path, T.BinaryIO], details: bool = False
-    ) -> None:
+    def __init__(self, path_or_stream: T.Union[Path, T.BinaryIO]) -> None:
         """
         Initialize EXIF object with FILE as filename or fileobj
         """
         if isinstance(path_or_stream, Path):
             with path_or_stream.open("rb") as fp:
-                self.tags = exifread.process_file(fp, details=details, debug=True)
+                try:
+                    self.tags = exifread.process_file(fp, details=True, debug=True)
+                except Exception:
+                    self.tags = {}
+
         else:
-            self.tags = exifread.process_file(
-                path_or_stream, details=details, debug=True
-            )
+            try:
+                self.tags = exifread.process_file(
+                    path_or_stream, details=True, debug=True
+                )
+            except Exception:
+                self.tags = {}
 
     def extract_altitude(self) -> T.Optional[float]:
         """
@@ -156,26 +516,21 @@ class ExifRead:
         gpsdate = self._extract_alternative_fields(["GPS GPSDate"], str)
         if gpsdate is None:
             return None
-        dt = strptime_alternative_formats(gpsdate, ["%Y:%m:%d"])
+
+        dt = strptime_alternative_formats(gpsdate, ["%Y:%m:%d", "%Y-%m-%d"])
         if dt is None:
             return None
+
         gpstimestamp = self.tags.get("GPS GPSTimeStamp")
         if not gpstimestamp:
             return None
-        try:
-            h, m, s, *_ = gpstimestamp.values
-        except (ValueError, TypeError):
+
+        delta = parse_time_ratios_as_timedelta(gpstimestamp.values)
+        if delta is None:
             return None
-        if not isinstance(h, Ratio):
-            return None
-        if not isinstance(m, Ratio):
-            return None
-        if not isinstance(s, Ratio):
-            return None
-        hour = int(eval_frac(h))
-        minute = int(eval_frac(m))
-        second = float(eval_frac(s))
-        dt = dt + datetime.timedelta(hours=hour, minutes=minute, seconds=second)
+
+        dt = dt + delta
+
         # GPS timestamps are always GMT
         dt = dt.replace(tzinfo=datetime.timezone.utc)
         return dt
@@ -192,7 +547,7 @@ class ExifRead:
         if subsec:
             subsec = subsec.replace(" ", "0")
         offset = self._extract_alternative_fields([offset_tag], field_type=str)
-        dt = parse_datetimestr(dtstr, subsec, offset)
+        dt = parse_datetimestr_with_subsec_and_offset(dtstr, subsec, offset)
         if dt is None:
             return None
         return dt
@@ -296,13 +651,19 @@ class ExifRead:
         """
         Extract camera make
         """
-        return self._extract_alternative_fields(["EXIF LensMake", "Image Make"], str)
+        make = self._extract_alternative_fields(["Image Make", "EXIF LensMake"], str)
+        if make is None:
+            return None
+        return make.strip()
 
     def extract_model(self) -> T.Optional[str]:
         """
         Extract camera model
         """
-        return self._extract_alternative_fields(["EXIF LensModel", "Image Model"], str)
+        model = self._extract_alternative_fields(["Image Model", "EXIF LensModel"], str)
+        if model is None:
+            return None
+        return model.strip()
 
     def extract_width(self) -> T.Optional[int]:
         """
@@ -346,13 +707,17 @@ class ExifRead:
                 continue
             values = tag.values
             if field_type is float:
-                if values and isinstance(values[0], Ratio):
-                    try:
-                        return T.cast(_FIELD_TYPE, eval_frac(values[0]))
-                    except ZeroDivisionError:
-                        pass
+                if values:
+                    if len(values) == 1 and isinstance(values[0], Ratio):
+                        try:
+                            return T.cast(_FIELD_TYPE, eval_frac(values[0]))
+                        except ZeroDivisionError:
+                            pass
             elif field_type is str:
-                return T.cast(_FIELD_TYPE, str(values))
+                try:
+                    return T.cast(_FIELD_TYPE, str(values))
+                except (ValueError, TypeError):
+                    pass
             elif field_type is int:
                 if values:
                     try:
@@ -361,4 +726,117 @@ class ExifRead:
                         pass
             else:
                 raise ValueError(f"Invalid field type {field_type}")
+        return None
+
+    def extract_application_notes(self) -> T.Optional[str]:
+        xmp = self.tags.get("Image ApplicationNotes")
+        if xmp is None:
+            return None
+        try:
+            return str(xmp)
+        except (ValueError, TypeError):
+            return None
+
+
+class ExifRead(ExifReadFromEXIF):
+    def __init__(self, path_or_stream: T.Union[Path, T.BinaryIO]) -> None:
+        super().__init__(path_or_stream)
+        self._xmp = self._extract_xmp()
+
+    def _extract_xmp(self) -> T.Optional[ExifReadFromXMP]:
+        application_notes = self.extract_application_notes()
+        if application_notes is None:
+            return None
+        try:
+            e = et.fromstring(application_notes)
+        except et.ParseError:
+            return None
+        return ExifReadFromXMP(et.ElementTree(e))
+
+    def extract_altitude(self) -> T.Optional[float]:
+        val = super().extract_altitude()
+        if val is not None:
+            return val
+        if self._xmp is None:
+            return None
+        val = self._xmp.extract_altitude()
+        if val is not None:
+            return val
+        return None
+
+    def extract_capture_time(self) -> T.Optional[datetime.datetime]:
+        val = super().extract_capture_time()
+        if val is not None:
+            return val
+        if self._xmp is None:
+            return None
+        val = self._xmp.extract_capture_time()
+        if val is not None:
+            return val
+        return None
+
+    def extract_direction(self) -> T.Optional[float]:
+        val = super().extract_direction()
+        if val is not None:
+            return val
+        if self._xmp is None:
+            return None
+        val = self._xmp.extract_direction()
+        if val is not None:
+            return val
+        return None
+
+    def extract_lon_lat(self) -> T.Optional[T.Tuple[float, float]]:
+        val = super().extract_lon_lat()
+        if val is not None:
+            return val
+        if self._xmp is None:
+            return None
+        val = self._xmp.extract_lon_lat()
+        if val is not None:
+            return val
+        return None
+
+    def extract_make(self) -> T.Optional[str]:
+        val = super().extract_make()
+        if val is not None:
+            return val
+        if self._xmp is None:
+            return None
+        val = self._xmp.extract_make()
+        if val is not None:
+            return val
+        return None
+
+    def extract_model(self) -> T.Optional[str]:
+        val = super().extract_model()
+        if val is not None:
+            return val
+        if self._xmp is None:
+            return None
+        val = self._xmp.extract_model()
+        if val is not None:
+            return val
+        return None
+
+    def extract_width(self) -> T.Optional[int]:
+        val = super().extract_width()
+        if val is not None:
+            return val
+        if self._xmp is None:
+            return None
+        val = self._xmp.extract_width()
+        if val is not None:
+            return val
+        return None
+
+    def extract_height(self) -> T.Optional[int]:
+        val = super().extract_height()
+        if val is not None:
+            return val
+        if self._xmp is None:
+            return None
+        val = self._xmp.extract_height()
+        if val is not None:
+            return val
         return None
