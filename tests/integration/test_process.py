@@ -10,7 +10,8 @@ import pytest
 
 from .fixtures import (
     EXECUTABLE,
-    is_ffmpeg_installed,
+    IS_FFMPEG_INSTALLED,
+    run_exiftool_and_generate_geotag_args,
     setup_config,
     setup_data,
     setup_upload,
@@ -75,11 +76,15 @@ def _local_to_utc(ct: str):
     )
 
 
-def test_process_images_with_defaults(setup_data: py.path.local):
-    x = subprocess.run(
-        f"{EXECUTABLE} process --file_types=image {PROCESS_FLAGS} {setup_data}",
-        shell=True,
-    )
+def test_process_images_with_defaults(
+    setup_data: py.path.local,
+    use_exiftool: bool = False,
+):
+    args = f"{EXECUTABLE} process --file_types=image {PROCESS_FLAGS} {setup_data}"
+    if use_exiftool:
+        args = run_exiftool_and_generate_geotag_args(setup_data, args)
+    x = subprocess.run(args, shell=True)
+
     assert x.returncode == 0, x.stderr
     verify_descs(
         [
@@ -101,11 +106,15 @@ def test_process_images_with_defaults(setup_data: py.path.local):
     )
 
 
-def test_time_with_offset(setup_data: py.path.local):
-    x = subprocess.run(
-        f"{EXECUTABLE} process --file_types=image {PROCESS_FLAGS} {setup_data} --offset_time=2.5",
-        shell=True,
-    )
+def test_process_images_with_defaults_with_exiftool(setup_data: py.path.local):
+    return test_process_images_with_defaults(setup_data, use_exiftool=True)
+
+
+def test_time_with_offset(setup_data: py.path.local, use_exiftool: bool = False):
+    args = f"{EXECUTABLE} process --file_types=image {PROCESS_FLAGS} {setup_data} --offset_time=2.5"
+    if use_exiftool:
+        args = run_exiftool_and_generate_geotag_args(setup_data, args)
+    x = subprocess.run(args, shell=True)
     assert x.returncode == 0, x.stderr
     verify_descs(
         [
@@ -128,10 +137,10 @@ def test_time_with_offset(setup_data: py.path.local):
         Path(setup_data, "mapillary_image_description.json"),
     )
 
-    x = subprocess.run(
-        f"{EXECUTABLE} process --file_types=image {PROCESS_FLAGS} {setup_data} --offset_time=-1.0",
-        shell=True,
-    )
+    args = f"{EXECUTABLE} process --file_types=image {PROCESS_FLAGS} {setup_data} --offset_time=-1.0"
+    if use_exiftool:
+        args = run_exiftool_and_generate_geotag_args(setup_data, args)
+    x = subprocess.run(args, shell=True)
     assert x.returncode == 0, x.stderr
     verify_descs(
         [
@@ -155,11 +164,17 @@ def test_time_with_offset(setup_data: py.path.local):
     )
 
 
-def test_process_images_with_overwrite_all_EXIF_tags(setup_data: py.path.local):
-    x = subprocess.run(
-        f"{EXECUTABLE} process --file_types=image --overwrite_all_EXIF_tags --offset_time=2.5 {PROCESS_FLAGS} {setup_data}",
-        shell=True,
-    )
+def test_time_with_offset_with_exiftool(setup_data: py.path.local):
+    return test_time_with_offset(setup_data, use_exiftool=True)
+
+
+def test_process_images_with_overwrite_all_EXIF_tags(
+    setup_data: py.path.local, use_exiftool: bool = False
+):
+    args = f"{EXECUTABLE} process --file_types=image --overwrite_all_EXIF_tags --offset_time=2.5 {PROCESS_FLAGS} {setup_data}"
+    if use_exiftool:
+        args = run_exiftool_and_generate_geotag_args(setup_data, args)
+    x = subprocess.run(args, shell=True)
     assert x.returncode == 0, x.stderr
     expected_descs = [
         {
@@ -182,10 +197,11 @@ def test_process_images_with_overwrite_all_EXIF_tags(setup_data: py.path.local):
         expected_descs,
         Path(setup_data, "mapillary_image_description.json"),
     )
-    x = subprocess.run(
-        f"{EXECUTABLE} process --file_types=image {PROCESS_FLAGS} {setup_data}",
-        shell=True,
-    )
+
+    args = f"{EXECUTABLE} process --file_types=image {PROCESS_FLAGS} {setup_data}"
+    if use_exiftool:
+        args = run_exiftool_and_generate_geotag_args(setup_data, args)
+    x = subprocess.run(args, shell=True)
     assert x.returncode == 0, x.stderr
     verify_descs(
         expected_descs,
@@ -193,11 +209,19 @@ def test_process_images_with_overwrite_all_EXIF_tags(setup_data: py.path.local):
     )
 
 
-def test_angle_with_offset(setup_data: py.path.local):
-    x = subprocess.run(
-        f"{EXECUTABLE} process --file_types=image {PROCESS_FLAGS} {setup_data} --offset_angle=2.5",
-        shell=True,
+def test_process_images_with_overwrite_all_EXIF_tags_with_exiftool(
+    setup_data: py.path.local,
+):
+    return test_process_images_with_overwrite_all_EXIF_tags(
+        setup_data, use_exiftool=True
     )
+
+
+def test_angle_with_offset(setup_data: py.path.local, use_exiftool: bool = False):
+    args = f"{EXECUTABLE} process --file_types=image {PROCESS_FLAGS} {setup_data} --offset_angle=2.5"
+    if use_exiftool:
+        args = run_exiftool_and_generate_geotag_args(setup_data, args)
+    x = subprocess.run(args, shell=True)
     assert x.returncode == 0, x.stderr
 
     verify_descs(
@@ -230,6 +254,10 @@ def test_angle_with_offset(setup_data: py.path.local):
         ],
         Path(setup_data, "mapillary_image_description.json"),
     )
+
+
+def test_angle_with_offset_with_exiftool(setup_data: py.path.local):
+    return test_angle_with_offset(setup_data, use_exiftool=True)
 
 
 def test_zip(tmpdir: py.path.local, setup_data: py.path.local):
@@ -514,7 +542,7 @@ def test_process_unsupported_filetypes(setup_data: py.path.local):
 
 
 def test_sample_video_relpath():
-    if not is_ffmpeg_installed:
+    if not IS_FFMPEG_INSTALLED:
         pytest.skip("skip because ffmpeg not installed")
 
     with tempfile.TemporaryDirectory() as dir:
@@ -526,7 +554,7 @@ def test_sample_video_relpath():
 
 
 def test_sample_video_relpath_dir():
-    if not is_ffmpeg_installed:
+    if not IS_FFMPEG_INSTALLED:
         pytest.skip("skip because ffmpeg not installed")
 
     with tempfile.TemporaryDirectory() as dir:
@@ -538,7 +566,7 @@ def test_sample_video_relpath_dir():
 
 
 def test_sample_video_without_video_time(setup_data: py.path.local):
-    if not is_ffmpeg_installed:
+    if not IS_FFMPEG_INSTALLED:
         pytest.skip("skip because ffmpeg not installed")
 
     video_dir = setup_data.join("videos")
@@ -582,7 +610,7 @@ def test_sample_video_without_video_time(setup_data: py.path.local):
 
 
 def test_video_process(setup_data: py.path.local):
-    if not is_ffmpeg_installed:
+    if not IS_FFMPEG_INSTALLED:
         pytest.skip("skip because ffmpeg not installed")
 
     video_dir = setup_data.join("videos")
@@ -602,7 +630,7 @@ def test_video_process(setup_data: py.path.local):
 
 
 def test_video_process_sample_with_multiple_distances(setup_data: py.path.local):
-    if not is_ffmpeg_installed:
+    if not IS_FFMPEG_INSTALLED:
         pytest.skip("skip because ffmpeg not installed")
 
     video_dir = setup_data.join("gopro_data")
@@ -622,7 +650,7 @@ def test_video_process_sample_with_multiple_distances(setup_data: py.path.local)
 
 
 def test_video_process_sample_with_distance(setup_data: py.path.local):
-    if not is_ffmpeg_installed:
+    if not IS_FFMPEG_INSTALLED:
         pytest.skip("skip because ffmpeg not installed")
 
     video_dir = setup_data.join("gopro_data")
@@ -714,7 +742,7 @@ def test_video_process_sample_with_distance(setup_data: py.path.local):
 def test_video_process_and_upload(
     setup_upload: py.path.local, setup_data: py.path.local
 ):
-    if not is_ffmpeg_installed:
+    if not IS_FFMPEG_INSTALLED:
         pytest.skip("skip because ffmpeg not installed")
 
     video_dir = setup_data.join("videos")
@@ -739,7 +767,7 @@ def test_video_process_and_upload(
 
 
 def test_video_process_multiple_videos(setup_data: py.path.local):
-    if not is_ffmpeg_installed:
+    if not IS_FFMPEG_INSTALLED:
         pytest.skip("skip because ffmpeg not installed")
 
     gpx_file = setup_data.join("test.gpx")

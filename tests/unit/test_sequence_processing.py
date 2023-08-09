@@ -7,6 +7,7 @@ import py.path
 import pytest
 
 from mapillary_tools import (
+    constants,
     exceptions,
     geo,
     process_geotag_properties as pgp,
@@ -270,6 +271,35 @@ def test_interpolation(tmpdir: py.path.local):
     ]
 
 
+def test_subsec_interpolation(tmpdir: py.path.local):
+    constants.MAX_SEQUENCE_LENGTH = 2
+    curdir = tmpdir.mkdir("hello222").mkdir("world333")
+    sequence: T.List[types.Metadata] = [
+        # s1
+        _make_image_metadata(Path(curdir) / Path("./a.jpg"), 1, 1, 0.0),
+        _make_image_metadata(Path(curdir) / Path("./b.jpg"), 0, 1, 1.0),
+        _make_image_metadata(Path(curdir) / Path("./c.jpg"), 0, 0, 1.0),
+        _make_image_metadata(Path(curdir) / Path("./d.jpg"), 0, 0, 1.0),
+        _make_image_metadata(Path(curdir) / Path("./e.jpg"), 1, 0, 2.0),
+    ]
+    metadatas = psp.process_sequence_properties(
+        sequence,
+        cutoff_distance=1000000000,
+        cutoff_time=100,
+        interpolate_directions=True,
+        duplicate_distance=100,
+        duplicate_angle=5,
+    )
+
+    assert 5 == len(metadatas)
+    image_metadatas = [d for d in metadatas if isinstance(d, types.ImageMetadata)]
+    image_metadatas.sort(key=lambda d: d.time)
+
+    assert [0, 1, 1.3, 1.6, 2] == [
+        int(metadata.time * 10) / 10 for metadata in image_metadatas
+    ]
+
+
 def test_interpolation_single(tmpdir: py.path.local):
     curdir = tmpdir.mkdir("hello77").mkdir("world88")
     sequence = [
@@ -351,7 +381,7 @@ def test_process_finalize(setup_data):
         },
         {
             "error": {
-                "type": "ValidationError",
+                "type": "MapillaryMetadataValidationError",
                 "message": "1000 is greater than the maximum of 180",
             },
             "filename": str(corrupt_exif),
@@ -359,7 +389,7 @@ def test_process_finalize(setup_data):
         },
         {
             "error": {
-                "type": "ValidationError",
+                "type": "MapillaryMetadataValidationError",
                 "message": "'image' is not one of ['camm', 'gopro', 'blackvue', 'video']",
             },
             "filename": str(setup_data.join("test_video.mp4")),
