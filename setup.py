@@ -44,10 +44,13 @@ setup(
     python_requires=">=3.8",
     packages=[
         "mapillary_tools",
+        "mapillary_tools.camm",
         "mapillary_tools.commands",
         "mapillary_tools.geotag",
-        "mapillary_tools.video_data_extraction",
-        "mapillary_tools.video_data_extraction.extractors",
+        "mapillary_tools.geotag.image_extractors",
+        "mapillary_tools.geotag.video_extractors",
+        "mapillary_tools.gpmf",
+        "mapillary_tools.mp4",
     ],
     entry_points="""
       [console_scripts]

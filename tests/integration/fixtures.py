@@ -28,6 +28,8 @@ USERNAME = "test_username_MAKE_SURE_IT_IS_UNIQUE_AND_LONG_AND_BORING"
 def setup_config(tmpdir: py.path.local):
     config_path = tmpdir.mkdir("configs").join("CLIENT_ID")
     os.environ["MAPILLARY_CONFIG_PATH"] = str(config_path)
+    os.environ["MAPILLARY_TOOLS_PROMPT_DISABLED"] = "YES"
+    os.environ["MAPILLARY_TOOLS__AUTH_VERIFICATION_DISABLED"] = "YES"
     x = subprocess.run(
         f"{EXECUTABLE} authenticate --user_name {USERNAME} --jwt test_user_token",
         shell=True,
@@ -36,7 +38,9 @@ def setup_config(tmpdir: py.path.local):
     yield config_path
     if tmpdir.check():
         tmpdir.remove(ignore_errors=True)
-    del os.environ["MAPILLARY_CONFIG_PATH"]
+    os.environ.pop("MAPILLARY_CONFIG_PATH", None)
+    os.environ.pop("MAPILLARY_TOOLS_PROMPT_DISABLED", None)
+    os.environ.pop("MAPILLARY_TOOLS__AUTH_VERIFICATION_DISABLED", None)
 
 
 @pytest.fixture
@@ -53,18 +57,19 @@ def setup_data(tmpdir: py.path.local):
 def setup_upload(tmpdir: py.path.local):
     upload_dir = tmpdir.mkdir("mapillary_public_uploads")
     os.environ["MAPILLARY_UPLOAD_PATH"] = str(upload_dir)
-    os.environ["MAPILLARY__DISABLE_BLACKVUE_CHECK"] = "YES"
-    os.environ["MAPILLARY__DISABLE_CAMM_CHECK"] = "YES"
+    os.environ["MAPILLARY_TOOLS__AUTH_VERIFICATION_DISABLED"] = "YES"
+    os.environ["MAPILLARY_TOOLS_PROMPT_DISABLED"] = "YES"
     os.environ["MAPILLARY__ENABLE_UPLOAD_HISTORY_FOR_DRY_RUN"] = "YES"
     history_path = tmpdir.join("history")
     os.environ["MAPILLARY_UPLOAD_HISTORY_PATH"] = str(history_path)
     yield upload_dir
     if tmpdir.check():
         tmpdir.remove(ignore_errors=True)
-    del os.environ["MAPILLARY_UPLOAD_PATH"]
-    del os.environ["MAPILLARY__DISABLE_BLACKVUE_CHECK"]
-    del os.environ["MAPILLARY_UPLOAD_HISTORY_PATH"]
-    del os.environ["MAPILLARY__ENABLE_UPLOAD_HISTORY_FOR_DRY_RUN"]
+    os.environ.pop("MAPILLARY_UPLOAD_PATH", None)
+    os.environ.pop("MAPILLARY_UPLOAD_HISTORY_PATH", None)
+    os.environ.pop("MAPILLARY_TOOLS__AUTH_VERIFICATION_DISABLED", None)
+    os.environ.pop("MAPILLARY_TOOLS_PROMPT_DISABLED", None)
+    os.environ.pop("MAPILLARY__ENABLE_UPLOAD_HISTORY_FOR_DRY_RUN", None)
 
 
 def _ffmpeg_installed():
@@ -147,7 +152,7 @@ def run_exiftool_and_generate_geotag_args(
         pytest.skip("exiftool not installed")
     exiftool_outuput_dir = run_exiftool(test_data_dir)
     exiftool_params = (
-        f"--geotag_source exiftool --geotag_source_path {exiftool_outuput_dir}"
+        f"--geotag_source exiftool_xml --geotag_source_path {exiftool_outuput_dir}"
     )
     return f"{run_args} {exiftool_params}"
 
@@ -159,13 +164,14 @@ with open("schema/image_description_schema.json") as fp:
 def validate_and_extract_image(image_path: str):
     with open(image_path, "rb") as fp:
         tags = exifread.process_file(fp)
-        desc_tag = tags.get("Image ImageDescription")
-        assert desc_tag is not None, (tags, image_path)
-        desc = json.loads(str(desc_tag.values))
-        desc["filename"] = image_path
-        desc["filetype"] = "image"
-        jsonschema.validate(desc, image_description_schema)
-        return desc
+
+    desc_tag = tags.get("Image ImageDescription")
+    assert desc_tag is not None, (tags, image_path)
+    desc = json.loads(str(desc_tag.values))
+    desc["filename"] = image_path
+    desc["filetype"] = "image"
+    jsonschema.validate(desc, image_description_schema)
+    return desc
 
 
 def validate_and_extract_zip(zip_path: str) -> T.List[T.Dict]:
@@ -226,7 +232,9 @@ def verify_descs(expected: T.List[T.Dict], actual: T.Union[Path, T.List[T.Dict]]
         actual_desc = actual_map.get(filename)
         assert actual_desc is not None, expected_desc
         if "error" in expected_desc:
-            assert expected_desc["error"]["type"] == actual_desc["error"]["type"]
+            assert expected_desc["error"]["type"] == actual_desc.get("error", {}).get(
+                "type"
+            ), f"{expected_desc=} != {actual_desc=}"
             if "message" in expected_desc["error"]:
                 assert (
                     expected_desc["error"]["message"] == actual_desc["error"]["message"]
@@ -238,33 +246,39 @@ def verify_descs(expected: T.List[T.Dict], actual: T.Union[Path, T.List[T.Dict]]
             e = expected_desc["MAPCompassHeading"]
             assert "MAPCompassHeading" in actual_desc, actual_desc
             a = actual_desc["MAPCompassHeading"]
-            assert (
-                abs(e["TrueHeading"] - a["TrueHeading"]) < 0.001
-            ), f'got {a["TrueHeading"]} but expect {e["TrueHeading"]} in {filename}'
-            assert (
-                abs(e["MagneticHeading"] - a["MagneticHeading"]) < 0.001
-            ), f'got {a["MagneticHeading"]} but expect {e["MagneticHeading"]} in {filename}'
+            assert abs(e["TrueHeading"] - a["TrueHeading"]) < 0.001, (
+                f"got {a['TrueHeading']} but expect {e['TrueHeading']} in {filename}"
+            )
+            assert abs(e["MagneticHeading"] - a["MagneticHeading"]) < 0.001, (
+                f"got {a['MagneticHeading']} but expect {e['MagneticHeading']} in {filename}"
+            )
 
         if "MAPCaptureTime" in expected_desc:
-            assert (
-                expected_desc["MAPCaptureTime"] == actual_desc["MAPCaptureTime"]
-            ), f'expect {expected_desc["MAPCaptureTime"]} but got {actual_desc["MAPCaptureTime"]} in {filename}'
+            assert expected_desc["MAPCaptureTime"] == actual_desc["MAPCaptureTime"], (
+                f"expect {expected_desc['MAPCaptureTime']} but got {actual_desc['MAPCaptureTime']} in {filename}"
+            )
 
         if "MAPLongitude" in expected_desc:
             assert (
                 abs(expected_desc["MAPLongitude"] - actual_desc["MAPLongitude"])
                 < 0.00001
-            ), f'expect {expected_desc["MAPLongitude"]} but got {actual_desc["MAPLongitude"]} in {filename}'
+            ), (
+                f"expect {expected_desc['MAPLongitude']} but got {actual_desc['MAPLongitude']} in {filename}"
+            )
 
         if "MAPLatitude" in expected_desc:
             assert (
                 abs(expected_desc["MAPLatitude"] - actual_desc["MAPLatitude"]) < 0.00001
-            ), f'expect {expected_desc["MAPLatitude"]} but got {actual_desc["MAPLatitude"]} in {filename}'
+            ), (
+                f"expect {expected_desc['MAPLatitude']} but got {actual_desc['MAPLatitude']} in {filename}"
+            )
 
         if "MAPAltitude" in expected_desc:
             assert (
                 abs(expected_desc["MAPAltitude"] - actual_desc["MAPAltitude"]) < 0.001
-            ), f'expect {expected_desc["MAPAltitude"]} but got {actual_desc["MAPAltitude"]} in {filename}'
+            ), (
+                f"expect {expected_desc['MAPAltitude']} but got {actual_desc['MAPAltitude']} in {filename}"
+            )
 
         if "MAPDeviceMake" in expected_desc:
             assert expected_desc["MAPDeviceMake"] == actual_desc["MAPDeviceMake"]

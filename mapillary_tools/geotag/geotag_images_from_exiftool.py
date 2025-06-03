@@ -1,109 +1,153 @@
-import io
+from __future__ import annotations
+
 import logging
+import sys
 import typing as T
 import xml.etree.ElementTree as ET
-from multiprocessing import Pool
 from pathlib import Path
 
-from tqdm import tqdm
+if sys.version_info >= (3, 12):
+    from typing import override
+else:
+    from typing_extensions import override
 
-from .. import exceptions, exiftool_read, types
-from .geotag_from_generic import GeotagImagesFromGeneric
-from .geotag_images_from_exif import GeotagImagesFromEXIF, verify_image_exif_write
+from .. import constants, exceptions, exiftool_read, types, utils
+from ..exiftool_runner import ExiftoolRunner
+from .base import GeotagImagesFromGeneric
+from .geotag_images_from_video import GeotagImagesFromVideo
+from .geotag_videos_from_exiftool import GeotagVideosFromExifToolXML
+from .image_extractors.exiftool import ImageExifToolExtractor
+from .utils import index_rdf_description_by_path
 
 LOG = logging.getLogger(__name__)
 
 
-class GeotagImagesFromExifTool(GeotagImagesFromGeneric):
+class GeotagImagesFromExifToolXML(GeotagImagesFromGeneric):
     def __init__(
         self,
-        image_paths: T.Sequence[Path],
         xml_path: Path,
-        num_processes: T.Optional[int] = None,
+        num_processes: int | None = None,
     ):
-        self.image_paths = image_paths
         self.xml_path = xml_path
-        self.num_processes = num_processes
-        super().__init__()
+        super().__init__(num_processes=num_processes)
 
-    @staticmethod
-    def geotag_image(element: ET.Element) -> types.ImageMetadataOrError:
-        image_path = exiftool_read.find_rdf_description_path(element)
-        assert image_path is not None, "must find the path from the element"
+    @classmethod
+    def build_image_extractors(
+        cls,
+        rdf_by_path: dict[str, ET.Element],
+        image_paths: T.Iterable[Path],
+    ) -> list[ImageExifToolExtractor | types.ErrorMetadata]:
+        results: list[ImageExifToolExtractor | types.ErrorMetadata] = []
 
-        try:
-            exif = exiftool_read.ExifToolRead(ET.ElementTree(element))
-            image_metadata = GeotagImagesFromEXIF.build_image_metadata(
-                image_path, exif, skip_lonlat_error=False
-            )
-            # load the image bytes into memory to avoid reading it multiple times
-            with image_path.open("rb") as fp:
-                image_bytesio = io.BytesIO(fp.read())
-            image_bytesio.seek(0, io.SEEK_SET)
-            verify_image_exif_write(
-                image_metadata,
-                image_bytes=image_bytesio.read(),
-            )
-        except Exception as ex:
-            return types.describe_error_metadata(
-                ex, image_path, filetype=types.FileType.IMAGE
-            )
-
-        image_bytesio.seek(0, io.SEEK_SET)
-        image_metadata.update_md5sum(image_bytesio)
-
-        return image_metadata
-
-    def to_description(self) -> T.List[types.ImageMetadataOrError]:
-        rdf_description_by_path = exiftool_read.index_rdf_description_by_path(
-            [self.xml_path]
-        )
-
-        error_metadatas: T.List[types.ErrorMetadata] = []
-        rdf_descriptions: T.List[ET.Element] = []
-        for path in self.image_paths:
-            rdf_description = rdf_description_by_path.get(
-                exiftool_read.canonical_path(path)
-            )
-            if rdf_description is None:
-                exc = exceptions.MapillaryEXIFNotFoundError(
-                    f"The {exiftool_read._DESCRIPTION_TAG} XML element for the image not found"
+        for path in image_paths:
+            rdf = rdf_by_path.get(exiftool_read.canonical_path(path))
+            if rdf is None:
+                ex = exceptions.MapillaryExifToolXMLNotFoundError(
+                    "Cannot find the image in the ExifTool XML"
                 )
-                error_metadatas.append(
+                results.append(
                     types.describe_error_metadata(
-                        exc, path, filetype=types.FileType.IMAGE
+                        ex, path, filetype=types.FileType.IMAGE
                     )
                 )
             else:
-                rdf_descriptions.append(rdf_description)
+                results.append(ImageExifToolExtractor(path, rdf))
 
-        if self.num_processes is None:
-            num_processes = self.num_processes
-            disable_multiprocessing = False
+        return results
+
+    @override
+    def _generate_image_extractors(
+        self, image_paths: T.Sequence[Path]
+    ) -> T.Sequence[ImageExifToolExtractor | types.ErrorMetadata]:
+        rdf_by_path = index_rdf_description_by_path([self.xml_path])
+        return self.build_image_extractors(rdf_by_path, image_paths)
+
+
+class GeotagImagesFromExifToolRunner(GeotagImagesFromGeneric):
+    @override
+    def _generate_image_extractors(
+        self, image_paths: T.Sequence[Path]
+    ) -> T.Sequence[ImageExifToolExtractor | types.ErrorMetadata]:
+        runner = ExiftoolRunner(constants.EXIFTOOL_PATH)
+
+        LOG.debug(
+            "Extracting XML from %d images with ExifTool command: %s",
+            len(image_paths),
+            " ".join(runner._build_args_read_stdin()),
+        )
+        try:
+            xml = runner.extract_xml(image_paths)
+        except FileNotFoundError as ex:
+            raise exceptions.MapillaryExiftoolNotFoundError(ex) from ex
+
+        try:
+            xml_element = ET.fromstring(xml)
+        except ET.ParseError as ex:
+            LOG.warning(
+                "Failed to parse ExifTool XML: %s",
+                str(ex),
+                exc_info=LOG.getEffectiveLevel() <= logging.DEBUG,
+            )
+            rdf_by_path = {}
         else:
-            num_processes = max(self.num_processes, 1)
-            disable_multiprocessing = self.num_processes <= 0
-
-        with Pool(processes=num_processes) as pool:
-            image_metadatas_iter: T.Iterator[types.ImageMetadataOrError]
-            if disable_multiprocessing:
-                image_metadatas_iter = map(
-                    GeotagImagesFromExifTool.geotag_image,
-                    rdf_descriptions,
-                )
-            else:
-                image_metadatas_iter = pool.imap(
-                    GeotagImagesFromExifTool.geotag_image,
-                    rdf_descriptions,
-                )
-            image_metadata_or_errors = list(
-                tqdm(
-                    image_metadatas_iter,
-                    desc="Extracting geotags from ExifTool XML",
-                    unit="images",
-                    disable=LOG.getEffectiveLevel() <= logging.DEBUG,
-                    total=len(self.image_paths),
-                )
+            rdf_by_path = exiftool_read.index_rdf_description_by_path_from_xml_element(
+                xml_element
             )
 
-        return error_metadatas + image_metadata_or_errors
+        return GeotagImagesFromExifToolXML.build_image_extractors(
+            rdf_by_path, image_paths
+        )
+
+
+class GeotagImagesFromExifToolWithSamples(GeotagImagesFromGeneric):
+    def __init__(
+        self,
+        xml_path: Path,
+        offset_time: float = 0.0,
+        num_processes: int | None = None,
+    ):
+        super().__init__(num_processes=num_processes)
+        self.xml_path = xml_path
+        self.offset_time = offset_time
+
+    def geotag_samples(
+        self, image_paths: T.Sequence[Path]
+    ) -> list[types.ImageMetadataOrError]:
+        # Find all video paths in self.xml_path
+        rdf_by_path = index_rdf_description_by_path([self.xml_path])
+        video_paths = utils.find_videos(
+            [Path(pathstr) for pathstr in rdf_by_path.keys()],
+            skip_subfolders=True,
+        )
+        # Find all video paths that have sample images
+        samples_by_video = utils.find_all_image_samples(image_paths, video_paths)
+
+        video_metadata_or_errors = GeotagVideosFromExifToolXML(
+            self.xml_path,
+            num_processes=self.num_processes,
+        ).to_description(list(samples_by_video.keys()))
+        sample_paths = sum(samples_by_video.values(), [])
+        sample_metadata_or_errors = GeotagImagesFromVideo(
+            video_metadata_or_errors,
+            offset_time=self.offset_time,
+            num_processes=self.num_processes,
+        ).to_description(sample_paths)
+
+        return sample_metadata_or_errors
+
+    @override
+    def to_description(
+        self, image_paths: T.Sequence[Path]
+    ) -> list[types.ImageMetadataOrError]:
+        sample_metadata_or_errors = self.geotag_samples(image_paths)
+
+        sample_paths = set(metadata.filename for metadata in sample_metadata_or_errors)
+
+        non_sample_paths = [path for path in image_paths if path not in sample_paths]
+
+        non_sample_metadata_or_errors = GeotagImagesFromExifToolXML(
+            self.xml_path,
+            num_processes=self.num_processes,
+        ).to_description(non_sample_paths)
+
+        return sample_metadata_or_errors + non_sample_metadata_or_errors

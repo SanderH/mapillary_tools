@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import dataclasses
 import datetime
 import enum
@@ -31,33 +33,40 @@ _ANGLE_PRECISION = 3
 
 
 class FileType(enum.Enum):
+    IMAGE = "image"
+    ZIP = "zip"
+    # VIDEO is a superset of all NATIVE_VIDEO_FILETYPES below.
+    # It also contains the videos that external geotag source (e.g. exiftool) supports
+    VIDEO = "video"
     BLACKVUE = "blackvue"
     CAMM = "camm"
     GOPRO = "gopro"
-    IMAGE = "image"
-    VIDEO = "video"
+
+
+NATIVE_VIDEO_FILETYPES = {
+    FileType.BLACKVUE,
+    FileType.CAMM,
+    FileType.GOPRO,
+}
 
 
 @dataclasses.dataclass
 class ImageMetadata(geo.Point):
     filename: Path
-    # if None or absent, it will be calculated
-    md5sum: T.Optional[str]
-    # filetype: is always FileType.IMAGE
-    width: T.Optional[int] = None
-    height: T.Optional[int] = None
-    MAPSequenceUUID: T.Optional[str] = None
-    MAPDeviceMake: T.Optional[str] = None
-    MAPDeviceModel: T.Optional[str] = None
-    MAPGPSAccuracyMeters: T.Optional[float] = None
-    MAPCameraUUID: T.Optional[str] = None
-    MAPOrientation: T.Optional[int] = None
-    # deprecated since v0.10.0; keep here for compatibility
-    MAPMetaTags: T.Optional[T.Dict] = None
-    # deprecated since v0.10.0; keep here for compatibility
-    MAPFilename: T.Optional[str] = None
+    md5sum: str | None = None
+    width: int | None = None
+    height: int | None = None
+    MAPSequenceUUID: str | None = None
+    MAPDeviceMake: str | None = None
+    MAPDeviceModel: str | None = None
+    MAPGPSAccuracyMeters: float | None = None
+    MAPCameraUUID: str | None = None
+    MAPOrientation: int | None = None
+    MAPMetaTags: dict | None = None
+    MAPFilename: str | None = None
+    filesize: int | None = None
 
-    def update_md5sum(self, image_data: T.Optional[T.BinaryIO] = None) -> None:
+    def update_md5sum(self, image_data: T.BinaryIO | None = None) -> None:
         if self.md5sum is None:
             if image_data is None:
                 with self.filename.open("rb") as fp:
@@ -75,12 +84,12 @@ class ImageMetadata(geo.Point):
 @dataclasses.dataclass
 class VideoMetadata:
     filename: Path
-    # if None or absent, it will be calculated
-    md5sum: T.Optional[str]
     filetype: FileType
     points: T.Sequence[geo.Point]
-    make: T.Optional[str] = None
-    model: T.Optional[str] = None
+    md5sum: str | None = None
+    make: str | None = None
+    model: str | None = None
+    filesize: int | None = None
 
     def update_md5sum(self) -> None:
         if self.md5sum is None:
@@ -91,7 +100,7 @@ class VideoMetadata:
 @dataclasses.dataclass
 class ErrorMetadata:
     filename: Path
-    filetype: T.Optional[FileType]
+    filetype: FileType
     error: Exception
 
 
@@ -101,8 +110,37 @@ Metadata = T.Union[ImageMetadata, VideoMetadata]
 MetadataOrError = T.Union[Metadata, ErrorMetadata]
 
 
+# Assume {GOPRO, VIDEO} are the NATIVE_VIDEO_FILETYPES:
+# a             | b               = result
+# {CAMM}        | {GOPRO}         = {}
+# {CAMM}        | {GOPRO, VIDEO}  = {CAMM}
+# {GOPRO}       | {GOPRO, VIDEO}  = {GOPRO}
+# {GOPRO}       | {VIDEO}         = {GOPRO}
+# {CAMM, GOPRO} | {VIDEO}         = {CAMM, GOPRO}
+# {VIDEO}       | {VIDEO}         = {CAMM, GOPRO, VIDEO}
+def combine_filetype_filters(
+    a: set[FileType] | None, b: set[FileType] | None
+) -> set[FileType] | None:
+    if a is None:
+        return b
+
+    if b is None:
+        return a
+
+    # VIDEO is a superset of NATIVE_VIDEO_FILETYPES,
+    # so we add NATIVE_VIDEO_FILETYPES to each set for intersection later
+
+    if FileType.VIDEO in a:
+        a = a | NATIVE_VIDEO_FILETYPES
+
+    if FileType.VIDEO in b:
+        b = b | NATIVE_VIDEO_FILETYPES
+
+    return a.intersection(b)
+
+
 class UserItem(TypedDict, total=False):
-    MAPOrganizationKey: T.Union[int, str]
+    MAPOrganizationKey: int | str
     # Not in use. Keep here for back-compatibility
     MAPSettingsUsername: str
     MAPSettingsUserKey: str
@@ -141,21 +179,22 @@ class ImageDescription(_SequenceOnly, _Image, MetaProperties, total=True):
     # filename is required
     filename: str
     # if None or absent, it will be calculated
-    md5sum: T.Optional[str]
+    md5sum: str | None
     filetype: Literal["image"]
+    filesize: int | None
 
 
 class _VideoDescriptionRequired(TypedDict, total=True):
     filename: str
-    # if None or absent, it will be calculated
-    md5sum: T.Optional[str]
+    md5sum: str | None
     filetype: str
-    MAPGPSTrack: T.List[T.Sequence[T.Union[float, int, None]]]
+    MAPGPSTrack: list[T.Sequence[float | int | None]]
 
 
 class VideoDescription(_VideoDescriptionRequired, total=False):
     MAPDeviceMake: str
     MAPDeviceModel: str
+    filesize: int | None
 
 
 class _ErrorDescription(TypedDict, total=False):
@@ -163,7 +202,7 @@ class _ErrorDescription(TypedDict, total=False):
     type: str
     message: str
     # vars is optional
-    vars: T.Dict
+    vars: dict
 
 
 class _ImageDescriptionErrorRequired(TypedDict, total=True):
@@ -175,8 +214,26 @@ class ImageDescriptionError(_ImageDescriptionErrorRequired, total=False):
     filetype: str
 
 
+M = T.TypeVar("M")
+
+
+def separate_errors(
+    metadatas: T.Iterable[M | ErrorMetadata],
+) -> tuple[list[M], list[ErrorMetadata]]:
+    good: list[M] = []
+    bad: list[ErrorMetadata] = []
+
+    for metadata in metadatas:
+        if isinstance(metadata, ErrorMetadata):
+            bad.append(metadata)
+        else:
+            good.append(metadata)
+
+    return good, bad
+
+
 def _describe_error_desc(
-    exc: Exception, filename: Path, filetype: T.Optional[FileType]
+    exc: Exception, filename: Path, filetype: FileType | None
 ) -> ImageDescriptionError:
     err: _ErrorDescription = {
         "type": exc.__class__.__name__,
@@ -205,7 +262,7 @@ def _describe_error_desc(
 
 
 def describe_error_metadata(
-    exc: Exception, filename: Path, filetype: T.Optional[FileType]
+    exc: Exception, filename: Path, filetype: FileType
 ) -> ErrorMetadata:
     return ErrorMetadata(filename=filename, filetype=filetype, error=exc)
 
@@ -273,7 +330,6 @@ ImageDescriptionEXIFSchema = {
         "MAPDeviceModel": {"type": "string"},
         "MAPGPSAccuracyMeters": {"type": "number"},
         "MAPCameraUUID": {"type": "string"},
-        # deprecated since v0.10.0; keep here for compatibility
         "MAPFilename": {
             "type": "string",
             "description": "The base filename of the image",
@@ -336,7 +392,7 @@ VideoDescriptionSchema = {
 }
 
 
-def merge_schema(*schemas: T.Dict) -> T.Dict:
+def merge_schema(*schemas: dict) -> dict:
     for s in schemas:
         assert s.get("type") == "object", "must be all object schemas"
     properties = {}
@@ -368,6 +424,10 @@ ImageDescriptionFileSchema = merge_schema(
                 "type": ["string", "null"],
                 "description": "MD5 checksum of the image content. If not provided, the uploader will compute it",
             },
+            "filesize": {
+                "type": ["number", "null"],
+                "description": "File size",
+            },
             "filetype": {
                 "type": "string",
                 "enum": [FileType.IMAGE.value],
@@ -393,6 +453,10 @@ VideoDescriptionFileSchema = merge_schema(
             "md5sum": {
                 "type": ["string", "null"],
                 "description": "MD5 checksum of the video content. If not provided, the uploader will compute it",
+            },
+            "filesize": {
+                "type": ["number", "null"],
+                "description": "File size",
             },
             "filetype": {
                 "type": "string",
@@ -423,11 +487,11 @@ def validate_image_desc(desc: T.Any) -> None:
         jsonschema.validate(instance=desc, schema=ImageDescriptionFileSchema)
     except jsonschema.ValidationError as ex:
         # do not use str(ex) which is more verbose
-        raise exceptions.MapillaryMetadataValidationError(ex.message)
+        raise exceptions.MapillaryMetadataValidationError(ex.message) from ex
     try:
         map_capture_time_to_datetime(desc["MAPCaptureTime"])
     except ValueError as ex:
-        raise exceptions.MapillaryMetadataValidationError(str(ex))
+        raise exceptions.MapillaryMetadataValidationError(str(ex)) from ex
 
 
 def validate_video_desc(desc: T.Any) -> None:
@@ -435,12 +499,12 @@ def validate_video_desc(desc: T.Any) -> None:
         jsonschema.validate(instance=desc, schema=VideoDescriptionFileSchema)
     except jsonschema.ValidationError as ex:
         # do not use str(ex) which is more verbose
-        raise exceptions.MapillaryMetadataValidationError(ex.message)
+        raise exceptions.MapillaryMetadataValidationError(ex.message) from ex
 
 
-def datetime_to_map_capture_time(time: T.Union[datetime.datetime, int, float]) -> str:
+def datetime_to_map_capture_time(time: datetime.datetime | int | float) -> str:
     if isinstance(time, (float, int)):
-        dt = datetime.datetime.utcfromtimestamp(time)
+        dt = datetime.datetime.fromtimestamp(time, datetime.timezone.utc)
         # otherwise it will be assumed to be in local time
         dt = dt.replace(tzinfo=datetime.timezone.utc)
     else:
@@ -484,6 +548,7 @@ def _as_video_desc(metadata: VideoMetadata) -> VideoDescription:
         "filename": str(metadata.filename.resolve()),
         "md5sum": metadata.md5sum,
         "filetype": metadata.filetype.value,
+        "filesize": metadata.filesize,
         "MAPGPSTrack": [_encode_point(p) for p in metadata.points],
     }
     if metadata.make:
@@ -497,6 +562,7 @@ def _as_image_desc(metadata: ImageMetadata) -> ImageDescription:
     desc: ImageDescription = {
         "filename": str(metadata.filename.resolve()),
         "md5sum": metadata.md5sum,
+        "filesize": metadata.filesize,
         "filetype": FileType.IMAGE.value,
         "MAPLatitude": round(metadata.lat, _COORDINATES_PRECISION),
         "MAPLongitude": round(metadata.lon, _COORDINATES_PRECISION),
@@ -537,11 +603,12 @@ def from_desc(desc):
 
 
 def _from_image_desc(desc) -> ImageMetadata:
-    kwargs: T.Dict = {}
+    kwargs: dict = {}
     for k, v in desc.items():
         if k not in [
             "filename",
             "md5sum",
+            "filesize",
             "filetype",
             "MAPLatitude",
             "MAPLongitude",
@@ -554,6 +621,7 @@ def _from_image_desc(desc) -> ImageMetadata:
     return ImageMetadata(
         filename=Path(desc["filename"]),
         md5sum=desc.get("md5sum"),
+        filesize=desc.get("filesize"),
         lat=desc["MAPLatitude"],
         lon=desc["MAPLongitude"],
         alt=desc.get("MAPAltitude"),
@@ -565,7 +633,7 @@ def _from_image_desc(desc) -> ImageMetadata:
     )
 
 
-def _encode_point(p: geo.Point) -> T.Sequence[T.Union[float, int, None]]:
+def _encode_point(p: geo.Point) -> T.Sequence[float | int | None]:
     entry = [
         int(p.time * 1000),
         round(p.lon, _COORDINATES_PRECISION),
@@ -585,6 +653,7 @@ def _from_video_desc(desc: VideoDescription) -> VideoMetadata:
     return VideoMetadata(
         filename=Path(desc["filename"]),
         md5sum=desc["md5sum"],
+        filesize=desc["filesize"],
         filetype=FileType(desc["filetype"]),
         points=[_decode_point(entry) for entry in desc["MAPGPSTrack"]],
         make=desc.get("MAPDeviceMake"),
@@ -626,15 +695,16 @@ def validate_and_fail_metadata(metadata: MetadataOrError) -> MetadataOrError:
     if isinstance(metadata, ErrorMetadata):
         return metadata
 
-    filetype: T.Optional[FileType] = None
+    if isinstance(metadata, ImageMetadata):
+        filetype = FileType.IMAGE
+        validate = validate_image_desc
+    else:
+        assert isinstance(metadata, VideoMetadata)
+        filetype = metadata.filetype
+        validate = validate_video_desc
+
     try:
-        if isinstance(metadata, ImageMetadata):
-            filetype = FileType.IMAGE
-            validate_image_desc(as_desc(metadata))
-        else:
-            assert isinstance(metadata, VideoMetadata)
-            filetype = metadata.filetype
-            validate_video_desc(as_desc(metadata))
+        validate(as_desc(metadata))
     except exceptions.MapillaryMetadataValidationError as ex:
         # rethrow because the original error is too verbose
         return describe_error_metadata(
@@ -668,10 +738,10 @@ def desc_file_to_exif(
 
 
 def group_and_sort_images(
-    metadatas: T.Sequence[ImageMetadata],
-) -> T.Dict[str, T.List[ImageMetadata]]:
+    metadatas: T.Iterable[ImageMetadata],
+) -> dict[str, list[ImageMetadata]]:
     # group metadatas by uuid
-    sequences_by_uuid: T.Dict[str, T.List[ImageMetadata]] = {}
+    sequences_by_uuid: dict[str, list[ImageMetadata]] = {}
     missing_sequence_uuid = str(uuid.uuid4())
     for metadata in metadatas:
         if metadata.MAPSequenceUUID is None:
@@ -691,9 +761,10 @@ def group_and_sort_images(
     return sorted_sequences_by_uuid
 
 
-def sequence_md5sum(sequence: T.Iterable[ImageMetadata]) -> str:
+def update_sequence_md5sum(sequence: T.Iterable[ImageMetadata]) -> str:
     md5 = hashlib.md5()
     for metadata in sequence:
+        metadata.update_md5sum()
         assert isinstance(metadata.md5sum, str), "md5sum should be calculated"
         md5.update(metadata.md5sum.encode("utf-8"))
     return md5.hexdigest()

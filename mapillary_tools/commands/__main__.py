@@ -2,19 +2,17 @@ import argparse
 import enum
 import logging
 import sys
-import typing as T
 from pathlib import Path
 
-from .. import constants, exceptions, VERSION
+import requests
+
+from .. import api_v4, constants, exceptions, VERSION
 from . import (
     authenticate,
     process,
     process_and_upload,
     sample_video,
     upload,
-    upload_blackvue,
-    upload_camm,
-    upload_zip,
     video_process,
     video_process_and_upload,
     zip,
@@ -23,9 +21,6 @@ from . import (
 mapillary_tools_commands = [
     process,
     upload,
-    upload_camm,
-    upload_blackvue,
-    upload_zip,
     sample_video,
     video_process,
     authenticate,
@@ -90,7 +85,7 @@ def configure_logger(logger: logging.Logger, stream=None) -> None:
     logger.addHandler(handler)
 
 
-def _log_params(argvars: T.Dict) -> None:
+def _log_params(argvars: dict) -> None:
     MAX_ENTRIES = 5
 
     def _stringify(x) -> str:
@@ -166,11 +161,16 @@ def main():
 
     try:
         args.func(argvars)
-    except exceptions.MapillaryUserError as exc:
+    except requests.HTTPError as ex:
+        LOG.error("%s: %s", ex.__class__.__name__, api_v4.readable_http_error(ex))
+        # TODO: standardize exit codes as exceptions.MapillaryUserError
+        sys.exit(16)
+
+    except exceptions.MapillaryUserError as ex:
         LOG.error(
-            "%s: %s", exc.__class__.__name__, exc, exc_info=log_level == logging.DEBUG
+            "%s: %s", ex.__class__.__name__, ex, exc_info=log_level == logging.DEBUG
         )
-        sys.exit(exc.exit_code)
+        sys.exit(ex.exit_code)
 
 
 if __name__ == "__main__":

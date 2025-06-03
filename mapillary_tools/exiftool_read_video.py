@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import dataclasses
 import functools
 import logging
@@ -5,10 +7,11 @@ import typing as T
 import xml.etree.ElementTree as ET
 
 from . import exif_read, exiftool_read, geo
+from .telemetry import GPSFix, GPSPoint
 
 
 MAX_TRACK_ID = 10
-EXIFTOOL_NAMESPACES: T.Dict[str, str] = {
+EXIFTOOL_NAMESPACES: dict[str, str] = {
     "Keys": "http://ns.exiftool.org/QuickTime/Keys/1.0/",
     "IFD0": "http://ns.exiftool.org/EXIF/IFD0/1.0/",
     "QuickTime": "http://ns.exiftool.org/QuickTime/QuickTime/1.0/",
@@ -27,7 +30,7 @@ _FIELD_TYPE = T.TypeVar("_FIELD_TYPE", int, float, str, T.List[str])
 expand_tag = functools.partial(exiftool_read.expand_tag, namespaces=EXIFTOOL_NAMESPACES)
 
 
-def _maybe_float(text: T.Optional[str]) -> T.Optional[float]:
+def _maybe_float(text: str | None) -> float | None:
     if text is None:
         return None
     try:
@@ -36,8 +39,8 @@ def _maybe_float(text: T.Optional[str]) -> T.Optional[float]:
         return None
 
 
-def _index_text_by_tag(elements: T.Iterable[ET.Element]) -> T.Dict[str, T.List[str]]:
-    texts_by_tag: T.Dict[str, T.List[str]] = {}
+def _index_text_by_tag(elements: T.Iterable[ET.Element]) -> dict[str, list[str]]:
+    texts_by_tag: dict[str, list[str]] = {}
     for element in elements:
         tag = element.tag
         if element.text is not None:
@@ -46,10 +49,10 @@ def _index_text_by_tag(elements: T.Iterable[ET.Element]) -> T.Dict[str, T.List[s
 
 
 def _extract_alternative_fields(
-    texts_by_tag: T.Dict[str, T.List[str]],
+    texts_by_tag: dict[str, list[str]],
     fields: T.Sequence[str],
     field_type: T.Type[_FIELD_TYPE],
-) -> T.Optional[_FIELD_TYPE]:
+) -> _FIELD_TYPE | None:
     for field in fields:
         values = texts_by_tag.get(expand_tag(field))
         if values is None:
@@ -80,14 +83,15 @@ def _extract_alternative_fields(
 
 
 def _aggregate_gps_track(
-    texts_by_tag: T.Dict[str, T.List[str]],
-    time_tag: T.Optional[str],
+    texts_by_tag: dict[str, list[str]],
+    time_tag: str | None,
     lon_tag: str,
     lat_tag: str,
-    alt_tag: T.Optional[str] = None,
-    direction_tag: T.Optional[str] = None,
-    ground_speed_tag: T.Optional[str] = None,
-) -> T.List[geo.PointWithFix]:
+    alt_tag: str | None = None,
+    gps_time_tag: str | None = None,
+    direction_tag: str | None = None,
+    ground_speed_tag: str | None = None,
+) -> list[GPSPoint]:
     """
     Aggregate all GPS data by the tags.
     It requires lat, lon to be present, and their lengths must match.
@@ -138,8 +142,8 @@ def _aggregate_gps_track(
     assert len(timestamps) == expected_length
 
     def _aggregate_float_values_same_length(
-        tag: T.Optional[str],
-    ) -> T.List[T.Optional[float]]:
+        tag: str | None,
+    ) -> list[float | None]:
         if tag is not None:
             vals = [
                 _maybe_float(val)
@@ -160,6 +164,15 @@ def _aggregate_gps_track(
     # aggregate speeds (optional)
     ground_speeds = _aggregate_float_values_same_length(ground_speed_tag)
 
+    # GPS timestamp (optional)
+    epoch_time = None
+    if gps_time_tag is not None:
+        gps_time_text = _extract_alternative_fields(texts_by_tag, [gps_time_tag], str)
+        if gps_time_text is not None:
+            dt = exif_read.parse_gps_datetime(gps_time_text)
+            if dt is not None:
+                epoch_time = geo.as_unix_time(dt)
+
     # build track
     track = []
     for timestamp, lon, lat, alt, direction, ground_speed in zip(
@@ -173,15 +186,16 @@ def _aggregate_gps_track(
         if timestamp is None or lon is None or lat is None:
             continue
         track.append(
-            geo.PointWithFix(
+            GPSPoint(
                 time=timestamp,
                 lon=lon,
                 lat=lat,
                 alt=alt,
                 angle=direction,
-                gps_fix=None,
-                gps_precision=None,
-                gps_ground_speed=ground_speed,
+                epoch_time=epoch_time,
+                fix=None,
+                precision=None,
+                ground_speed=ground_speed,
             )
         )
 
@@ -200,11 +214,11 @@ def _aggregate_samples(
     elements: T.Iterable[ET.Element],
     sample_time_tag: str,
     sample_duration_tag: str,
-) -> T.Generator[T.Tuple[float, float, T.List[ET.Element]], None, None]:
+) -> T.Generator[tuple[float, float, list[ET.Element]], None, None]:
     expanded_sample_time_tag = expand_tag(sample_time_tag)
     expanded_sample_duration_tag = expand_tag(sample_duration_tag)
 
-    accumulated_elements: T.List[ET.Element] = []
+    accumulated_elements: list[ET.Element] = []
     sample_time = None
     sample_duration = None
     for element in elements:
@@ -222,16 +236,17 @@ def _aggregate_samples(
 
 
 def _aggregate_gps_track_by_sample_time(
-    sample_iterator: T.Iterable[T.Tuple[float, float, T.List[ET.Element]]],
+    sample_iterator: T.Iterable[tuple[float, float, list[ET.Element]]],
     lon_tag: str,
     lat_tag: str,
-    alt_tag: T.Optional[str] = None,
-    direction_tag: T.Optional[str] = None,
-    ground_speed_tag: T.Optional[str] = None,
-    gps_fix_tag: T.Optional[str] = None,
-    gps_precision_tag: T.Optional[str] = None,
-) -> T.List[geo.PointWithFix]:
-    track: T.List[geo.PointWithFix] = []
+    alt_tag: str | None = None,
+    gps_time_tag: str | None = None,
+    direction_tag: str | None = None,
+    ground_speed_tag: str | None = None,
+    gps_fix_tag: str | None = None,
+    gps_precision_tag: str | None = None,
+) -> list[GPSPoint]:
+    track: list[GPSPoint] = []
 
     expanded_gps_fix_tag = None
     if gps_fix_tag is not None:
@@ -249,7 +264,7 @@ def _aggregate_gps_track_by_sample_time(
             gps_fix_texts = texts_by_tag.get(expanded_gps_fix_tag)
             if gps_fix_texts:
                 try:
-                    gps_fix = geo.GPSFix(int(gps_fix_texts[0]))
+                    gps_fix = GPSFix(int(gps_fix_texts[0]))
                 except ValueError:
                     gps_fix = None
 
@@ -280,7 +295,7 @@ def _aggregate_gps_track_by_sample_time(
             for idx, point in enumerate(points):
                 point.time = sample_time + idx * avg_timedelta
             track.extend(
-                dataclasses.replace(point, gps_fix=gps_fix, gps_precision=gps_precision)
+                dataclasses.replace(point, fix=gps_fix, precision=gps_precision)
                 for point in points
             )
 
@@ -298,7 +313,7 @@ class ExifToolReadVideo:
         self._texts_by_tag = _index_text_by_tag(self.etree.getroot())
         self._all_tags = set(self._texts_by_tag.keys())
 
-    def extract_gps_track(self) -> T.List[geo.Point]:
+    def extract_gps_track(self) -> list[geo.Point]:
         # blackvue and many other cameras
         track_with_fix = self._extract_gps_track_from_quicktime()
         if track_with_fix:
@@ -316,7 +331,7 @@ class ExifToolReadVideo:
 
         return []
 
-    def _extract_make_and_model(self) -> T.Tuple[T.Optional[str], T.Optional[str]]:
+    def _extract_make_and_model(self) -> tuple[str | None, str | None]:
         make = self._extract_alternative_fields(["GoPro:Make"], str)
         model = self._extract_alternative_fields(["GoPro:Model"], str)
         if model is not None:
@@ -347,15 +362,15 @@ class ExifToolReadVideo:
             model = model.strip()
         return make, model
 
-    def extract_make(self) -> T.Optional[str]:
+    def extract_make(self) -> str | None:
         make, _ = self._extract_make_and_model()
         return make
 
-    def extract_model(self) -> T.Optional[str]:
+    def extract_model(self) -> str | None:
         _, model = self._extract_make_and_model()
         return model
 
-    def _extract_gps_track_from_track(self) -> T.List[geo.PointWithFix]:
+    def _extract_gps_track_from_track(self) -> list[GPSPoint]:
         for track_id in range(1, MAX_TRACK_ID + 1):
             track_ns = f"Track{track_id}"
             if self._all_tags_exists(
@@ -389,15 +404,15 @@ class ExifToolReadVideo:
         self,
         fields: T.Sequence[str],
         field_type: T.Type[_FIELD_TYPE],
-    ) -> T.Optional[_FIELD_TYPE]:
+    ) -> _FIELD_TYPE | None:
         return _extract_alternative_fields(self._texts_by_tag, fields, field_type)
 
-    def _all_tags_exists(self, tags: T.Set[str]) -> bool:
+    def _all_tags_exists(self, tags: set[str]) -> bool:
         return self._all_tags.issuperset(tags)
 
     def _extract_gps_track_from_quicktime(
         self, namespace: str = "QuickTime"
-    ) -> T.List[geo.PointWithFix]:
+    ) -> list[GPSPoint]:
         if not self._all_tags_exists(
             {
                 expand_tag(f"{namespace}:GPSDateTime"),

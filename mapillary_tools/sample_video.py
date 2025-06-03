@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import logging
 import os
@@ -9,15 +11,15 @@ from pathlib import Path
 
 from . import constants, exceptions, ffmpeg as ffmpeglib, geo, types, utils
 from .exif_write import ExifEdit
-from .geotag import geotag_videos_from_video, mp4_sample_parser
-from .process_geotag_properties import GeotagSource
+from .geotag import geotag_videos_from_video
+from .mp4 import mp4_sample_parser
 
 LOG = logging.getLogger(__name__)
 
 
 def _normalize_path(
     video_import_path: Path, skip_subfolders: bool
-) -> T.Tuple[Path, T.List[Path]]:
+) -> tuple[Path, list[Path]]:
     if video_import_path.is_dir():
         video_list = utils.find_videos(
             [video_import_path], skip_subfolders=skip_subfolders
@@ -45,12 +47,11 @@ def sample_video(
     video_import_path: Path,
     import_path: Path,
     # None if called from the sample_video command
-    geotag_source: T.Optional[GeotagSource] = None,
     skip_subfolders=False,
     video_sample_distance=constants.VIDEO_SAMPLE_DISTANCE,
     video_sample_interval=constants.VIDEO_SAMPLE_INTERVAL,
     video_duration_ratio=constants.VIDEO_DURATION_RATIO,
-    video_start_time: T.Optional[str] = None,
+    video_start_time: str | None = None,
     skip_sample_errors: bool = False,
     rerun: bool = False,
 ) -> None:
@@ -61,7 +62,7 @@ def sample_video(
             f"Expect either non-negative video_sample_distance or positive video_sample_interval but got {video_sample_distance} and {video_sample_interval} respectively"
         )
 
-    video_start_time_dt: T.Optional[datetime.datetime] = None
+    video_start_time_dt: datetime.datetime | None = None
     if video_start_time is not None:
         try:
             video_start_time_dt = types.map_capture_time_to_datetime(video_start_time)
@@ -85,16 +86,6 @@ def sample_video(
             elif sample_dir.is_file():
                 os.remove(sample_dir)
 
-    if geotag_source is None:
-        geotag_source = "exif"
-
-    # If it is not exif, then we use the legacy interval-based sample and geotag them in "process" for backward compatibility
-    if geotag_source not in ["exif"]:
-        if 0 <= video_sample_distance:
-            raise exceptions.MapillaryBadParameterError(
-                f'Geotagging from "{geotag_source}" works with the legacy interval-based sampling only. To switch back, rerun the command with "--video_sample_distance -1 --video_sample_interval 2"'
-            )
-
     for video_path in video_list:
         # need to resolve video_path because video_dir might be absolute
         sample_dir = Path(import_path).joinpath(
@@ -117,9 +108,9 @@ def sample_video(
                     start_time=video_start_time_dt,
                 )
             else:
-                assert (
-                    0 < video_sample_interval
-                ), "expect positive video_sample_interval but got {video_sample_interval}"
+                assert 0 < video_sample_interval, (
+                    "expect positive video_sample_interval but got {video_sample_interval}"
+                )
                 _sample_single_video_by_interval(
                     video_path,
                     sample_dir,
@@ -166,7 +157,7 @@ def wip_dir_context(wip_dir: Path, done_dir: Path, rename_timeout_sec: int = 10)
                 except Exception as e:
                     time.sleep(1)
                     error = e
-            if not renamed and not error is None:
+            if not renamed and error is not None:
                 raise error
         else:
             wip_dir.rename(done_dir)
@@ -188,7 +179,7 @@ def _sample_single_video_by_interval(
     sample_dir: Path,
     sample_interval: float,
     duration_ratio: float,
-    start_time: T.Optional[datetime.datetime] = None,
+    start_time: datetime.datetime | None = None,
 ) -> None:
     ffmpeg = ffmpeglib.FFMPEG(constants.FFMPEG_PATH, constants.FFPROBE_PATH)
 
@@ -228,16 +219,16 @@ def _sample_video_stream_by_distance(
     points: T.Sequence[geo.Point],
     video_track_parser: mp4_sample_parser.TrackBoxParser,
     sample_distance: float,
-) -> T.Dict[int, T.Tuple[mp4_sample_parser.Sample, geo.Point]]:
+) -> dict[int, tuple[mp4_sample_parser.Sample, geo.Point]]:
     """
     Locate video frames along the track (points), then resample them by the minimal sample_distance, and return the sparse frames.
     """
 
     LOG.info("Extracting video samples")
-    sorted_samples = list(video_track_parser.parse_samples())
+    sorted_samples = list(video_track_parser.extract_samples())
     # we need sort sampels by composition time (CT) not the decoding offset (DT)
     # CT is the oder of videos streaming to audiences, as well as the order ffmpeg sampling
-    sorted_samples.sort(key=lambda sample: sample.composition_time_offset)
+    sorted_samples.sort(key=lambda sample: sample.exact_composition_time)
     LOG.info("Found total %d video samples", len(sorted_samples))
 
     # interpolate sample points between the GPS track range (with 1ms buffer)
@@ -251,11 +242,11 @@ def _sample_video_stream_by_distance(
         (
             frame_idx_0based,
             video_sample,
-            interpolator.interpolate(video_sample.composition_time_offset),
+            interpolator.interpolate(video_sample.exact_composition_time),
         )
         for frame_idx_0based, video_sample in enumerate(sorted_samples)
         if _within_track_time_range_buffered(
-            points, video_sample.composition_time_offset
+            points, video_sample.exact_composition_time
         )
     ]
     LOG.info("Found total %d interpolated video samples", len(interp_sample_points))
@@ -284,7 +275,7 @@ def _sample_single_video_by_distance(
     video_path: Path,
     sample_dir: Path,
     sample_distance: float,
-    start_time: T.Optional[datetime.datetime] = None,
+    start_time: datetime.datetime | None = None,
 ) -> None:
     ffmpeg = ffmpeglib.FFMPEG(constants.FFMPEG_PATH, constants.FFPROBE_PATH)
 
@@ -298,9 +289,12 @@ def _sample_single_video_by_distance(
             )
 
     LOG.info("Extracting video metdata")
-    video_metadata = geotag_videos_from_video.GeotagVideosFromVideo.geotag_video(
-        video_path
+
+    video_metadatas = geotag_videos_from_video.GeotagVideosFromVideo().to_description(
+        [video_path]
     )
+    assert len(video_metadatas) == 1, "expect 1 video metadata"
+    video_metadata = video_metadatas[0]
     if isinstance(video_metadata, types.ErrorMetadata):
         LOG.warning(str(video_metadata.error))
         return
@@ -316,7 +310,7 @@ def _sample_single_video_by_distance(
     LOG.info("Extracting video samples")
     video_stream_idx = video_stream["index"]
     moov_parser = mp4_sample_parser.MovieBoxParser.parse_file(video_path)
-    video_track_parser = moov_parser.parse_track_at(video_stream_idx)
+    video_track_parser = moov_parser.extract_track_at(video_stream_idx)
     sample_points_by_frame_idx = _sample_video_stream_by_distance(
         video_metadata.points, video_track_parser, sample_distance
     )
@@ -338,9 +332,9 @@ def _sample_single_video_by_distance(
                 f"Expect {len(sorted_sample_indices)} samples but extracted {len(frame_samples)} samples"
             )
         for idx, (frame_idx_1based, sample_paths) in enumerate(frame_samples):
-            assert (
-                len(sample_paths) == 1
-            ), "Expect 1 sample path at {frame_idx_1based} but got {sample_paths}"
+            assert len(sample_paths) == 1, (
+                "Expect 1 sample path at {frame_idx_1based} but got {sample_paths}"
+            )
             if idx + 1 != frame_idx_1based:
                 raise exceptions.MapillaryVideoError(
                     f"Expect {sample_paths[0]} to be {idx + 1}th sample but got {frame_idx_1based}"
@@ -351,9 +345,9 @@ def _sample_single_video_by_distance(
                 continue
 
             video_sample, interp = sample_points_by_frame_idx[sample_idx]
-            assert (
-                interp.time == video_sample.composition_time_offset
-            ), f"interpolated time {interp.time} should match the video sample time {video_sample.composition_time_offset}"
+            assert interp.time == video_sample.exact_composition_time, (
+                f"interpolated time {interp.time} should match the video sample time {video_sample.exact_composition_time}"
+            )
 
             timestamp = start_time + datetime.timedelta(seconds=interp.time)
             exif_edit = ExifEdit(sample_paths[0])

@@ -1,17 +1,23 @@
+from __future__ import annotations
+
 import argparse
 import inspect
-import typing as T
 from pathlib import Path
 
-from .. import constants
+from .. import constants, types
 from ..process_geotag_properties import (
-    FileType,
-    GeotagSource,
+    DEFAULT_GEOTAG_SOURCE_OPTIONS,
     process_finalize,
     process_geotag_properties,
+    SourceType,
 )
-from ..process_import_meta_properties import process_import_meta_properties
 from ..process_sequence_properties import process_sequence_properties
+
+
+def bold_text(text: str) -> str:
+    ANSI_BOLD = "\033[1m"
+    ANSI_RESET_ALL = "\033[0m"
+    return f"{ANSI_BOLD}{text}{ANSI_RESET_ALL}"
 
 
 class Command:
@@ -19,24 +25,13 @@ class Command:
     help = "process images and videos"
 
     def add_basic_arguments(self, parser: argparse.ArgumentParser):
-        geotag_sources: T.List[GeotagSource] = [
-            "blackvue_videos",
-            "camm",
-            "exif",
-            "exiftool",
-            "gopro_videos",
-            "gpx",
-            "nmea",
+        geotag_gpx_based_sources: list[str] = [
+            SourceType.GPX.value,
+            SourceType.NMEA.value,
+            SourceType.GOPRO.value,
+            SourceType.BLACKVUE.value,
+            SourceType.CAMM.value,
         ]
-        geotag_gpx_based_sources: T.List[GeotagSource] = [
-            "gpx",
-            "gopro_videos",
-            "nmea",
-            "blackvue_videos",
-            "camm",
-        ]
-        for source in geotag_gpx_based_sources:
-            assert source in geotag_sources
 
         parser.add_argument(
             "--skip_process_errors",
@@ -48,14 +43,12 @@ class Command:
         parser.add_argument(
             "--filetypes",
             "--file_types",
-            help=f"Process files of the specified types only. Supported file types: {','.join(sorted(t.value for t in FileType))} [default: %(default)s]",
-            type=lambda option: set(FileType(t) for t in option.split(",")),
-            default=",".join(sorted(t.value for t in FileType)),
+            help=f"Process files of the specified types only. Supported file types: {','.join(sorted(t.value for t in types.FileType))} [default: %(default)s]",
+            type=lambda option: set(types.FileType(t) for t in option.split(",")),
+            default=None,
             required=False,
         )
-        group = parser.add_argument_group(
-            f"{constants.ANSI_BOLD}PROCESS EXIF OPTIONS{constants.ANSI_RESET_ALL}"
-        )
+        group = parser.add_argument_group(bold_text("PROCESS EXIF OPTIONS"))
         group.add_argument(
             "--overwrite_all_EXIF_tags",
             help="Overwrite all of the relevant EXIF tags with the values obtained in process. It is equivalent to supplying all the --overwrite_EXIF_*_tag flags.",
@@ -93,7 +86,7 @@ class Command:
         )
 
         group_metadata = parser.add_argument_group(
-            f"{constants.ANSI_BOLD}PROCESS METADATA OPTIONS{constants.ANSI_RESET_ALL}"
+            bold_text("PROCESS METADATA OPTIONS")
         )
         group_metadata.add_argument(
             "--device_make",
@@ -107,47 +100,9 @@ class Command:
             default=None,
             required=False,
         )
-        group_metadata.add_argument(
-            "--add_file_name",
-            help="[DEPRECATED since v0.9.4] Add original file name to EXIF.",
-            action="store_true",
-            required=False,
-        )
-        group_metadata.add_argument(
-            "--add_import_date",
-            help="[DEPRECATED since v0.10.0] Add import date.",
-            action="store_true",
-            required=False,
-        )
-        group_metadata.add_argument(
-            "--orientation",
-            help="Specify the image orientation in degrees. Note this might result in image rotation. Note this input has precedence over the input read from the import source file.",
-            choices=[0, 90, 180, 270],
-            type=int,
-            default=None,
-            required=False,
-        )
-        group_metadata.add_argument(
-            "--GPS_accuracy",
-            help="GPS accuracy in meters. Note this input has precedence over the input read from the import source file.",
-            default=None,
-            required=False,
-        )
-        group_metadata.add_argument(
-            "--camera_uuid",
-            help="Custom string used to differentiate different captures taken with the same camera make and model.",
-            default=None,
-            required=False,
-        )
-        group_metadata.add_argument(
-            "--custom_meta_data",
-            help='[DEPRECATED since v0.10.0] Add custom meta data to all images. Required format of input is a string, consisting of the meta data name, type and value, separated by a comma for each entry, where entries are separated by semicolon. Supported types are long, double, string, boolean, date. Example for two meta data entries "random_name1,double,12.34;random_name2,long,1234".',
-            default=None,
-            required=False,
-        )
 
         group_geotagging = parser.add_argument_group(
-            f"{constants.ANSI_BOLD}PROCESS GEOTAGGING OPTIONS{constants.ANSI_RESET_ALL}"
+            bold_text("PROCESS GEOTAGGING OPTIONS")
         )
         group_geotagging.add_argument(
             "--desc_path",
@@ -157,10 +112,9 @@ class Command:
         )
         group_geotagging.add_argument(
             "--geotag_source",
-            help="Provide the source of date/time and GPS information needed for geotagging. [default: %(default)s]",
-            action="store",
-            choices=geotag_sources,
-            default="exif",
+            help=f"Provide the source of date/time and GPS information needed for geotagging. Supported source types: {', '.join(g.value for g in SourceType)} [default: {','.join(DEFAULT_GEOTAG_SOURCE_OPTIONS)}]",
+            action="append",
+            default=[],
             required=False,
         )
         group_geotagging.add_argument(
@@ -213,7 +167,7 @@ class Command:
         )
 
         group_sequence = parser.add_argument_group(
-            f"{constants.ANSI_BOLD}PROCESS SEQUENCE OPTIONS{constants.ANSI_RESET_ALL}"
+            bold_text("PROCESS SEQUENCE OPTIONS")
         )
         group_sequence.add_argument(
             "--cutoff_distance",
@@ -251,40 +205,12 @@ class Command:
         )
 
     def run(self, vars_args: dict):
-        if (
-            "geotag_source" in vars_args
-            and vars_args["geotag_source"] == "blackvue_videos"
-            and (
-                "device_make" not in vars_args
-                or ("device_make" in vars_args and not vars_args["device_make"])
-            )
-        ):
-            vars_args["device_make"] = "Blackvue"
-        if (
-            "device_make" in vars_args
-            and vars_args["device_make"]
-            and vars_args["device_make"].lower() == "blackvue"
-        ):
-            vars_args["duplicate_angle"] = 360
-
         metadatas = process_geotag_properties(
-            vars_args=vars_args,
             **(
                 {
                     k: v
                     for k, v in vars_args.items()
                     if k in inspect.getfullargspec(process_geotag_properties).args
-                }
-            ),
-        )
-
-        metadatas = process_import_meta_properties(
-            metadatas=metadatas,
-            **(
-                {
-                    k: v
-                    for k, v in vars_args.items()
-                    if k in inspect.getfullargspec(process_import_meta_properties).args
                 }
             ),
         )
